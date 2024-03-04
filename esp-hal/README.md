@@ -21,7 +21,7 @@ Most traits defined by the [embedded-hal] family of packages are implemented as 
 
 Before using `esp-hal`, ensure that you have configured your [development environment] correctly, and the [required tooling] has been installed.
 
-When starting a new project using `esp-hal`, we strongly recommend you generate a project skeleton using [cargo-generate] and [esp-template]. This will take much of the guesswork out of the process and give you a starting point to build an application form.
+When starting a new project using `esp-hal`, we strongly recommend you generate a project skeleton using [cargo-generate] and [esp-template]. This will take much of the guesswork out of the process and give you a starting point to build an application from.
 
 Much of the functionality available is feature-gated, so be sure to refer to the documentation to read about all available Cargo features.
 
