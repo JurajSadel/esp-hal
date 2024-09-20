@@ -1123,10 +1123,6 @@ mod asynch {
                 .modify(|_, w| w.target0().clear_bit());
         });
 
-        // unsafe { &*crate::peripherals::SYSTIMER::PTR }
-        //     .int_clr()
-        //     .write(|w| w.target0().clear_bit_by_one());
-
         WAKERS[0].wake();
     }
 
@@ -1138,10 +1134,6 @@ mod asynch {
                 .modify(|_, w| w.target1().clear_bit());
         });
 
-        // unsafe { &*crate::peripherals::SYSTIMER::PTR }
-        //     .int_clr()
-        //     .write(|w| w.target1().clear_bit_by_one());
-
         WAKERS[1].wake();
     }
 
@@ -1152,10 +1144,6 @@ mod asynch {
                 .int_ena()
                 .modify(|_, w| w.target2().clear_bit());
         });
-
-        // unsafe { &*crate::peripherals::SYSTIMER::PTR }
-        //     .int_clr()
-        //     .write(|w| w.target2().clear_bit_by_one());
 
         WAKERS[2].wake();
     }
