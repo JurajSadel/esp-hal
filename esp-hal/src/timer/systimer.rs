@@ -145,6 +145,25 @@ impl<'d> SystemTimer<'d> {
         xtal_freq_mhz as u64 * MULTIPLIER
     }
 
+    /// Convert nanoseconds to ticks.
+    // IDF source: uint64_t systimer_ticks_to_us(uint64_t ticks)
+    pub(crate) fn ns_to_ticks(ticks: u64) -> u64 {
+        cfg_if::cfg_if! {
+            if #[cfg(esp32s2)] {
+                ticks * 80
+            } else if #[cfg(esp32c2)] {
+                use crate::rtc_cntl::RtcClock;
+                if RtcClock::estimate_xtal_frequency() > 33 {
+                    ticks * 16 // 40MHz
+                } else {
+                    ticks * 52 / 5 // 26MHz
+                }
+            } else {
+                ticks * 16
+            }
+        }
+    }
+
     /// Create a new instance.
     pub fn new(_systimer: impl Peripheral<P = SYSTIMER> + 'd) -> Self {
         // Don't reset Systimer as it will break `time::now`, only enable it
@@ -1031,11 +1050,11 @@ mod asynch {
 
     #[must_use = "futures do nothing unless you `.await` or poll them"]
     pub(crate) struct AlarmFuture<'a, COMP: Comparator, UNIT: Unit> {
-        alarm: &'a Alarm<'a, Periodic, crate::Async, COMP, UNIT>,
+        alarm: &'a Alarm<'a, Target, crate::Async, COMP, UNIT>,
     }
 
     impl<'a, COMP: Comparator, UNIT: Unit> AlarmFuture<'a, COMP, UNIT> {
-        pub(crate) fn new(alarm: &'a Alarm<'a, Periodic, crate::Async, COMP, UNIT>) -> Self {
+        pub(crate) fn new(alarm: &'a Alarm<'a, Target, crate::Async, COMP, UNIT>) -> Self {
             alarm.clear_interrupt();
 
             let (interrupt, handler) = match alarm.comparator.channel() {
@@ -1048,6 +1067,9 @@ mod asynch {
                 interrupt::bind_interrupt(interrupt, handler.handler());
                 interrupt::enable(interrupt, handler.priority()).unwrap();
             }
+
+            alarm.set_interrupt_handler(target0_handler);
+            // alarm.set_target(SystemTimer::now() + (SystemTimer::ticks_per_second() * 2));
 
             alarm.enable_interrupt(true);
 
@@ -1078,11 +1100,10 @@ mod asynch {
     }
 
     impl<'d, COMP: Comparator, UNIT: Unit> embedded_hal_async::delay::DelayNs
-        for Alarm<'d, Periodic, crate::Async, COMP, UNIT>
+        for Alarm<'d, Target, crate::Async, COMP, UNIT> // TODO this changed
     {
         async fn delay_ns(&mut self, ns: u32) {
-            let period = MicrosDurationU32::from_ticks(ns / 1000);
-            self.set_period(period);
+            self.set_target(SystemTimer::now() + SystemTimer::ns_to_ticks(ns as u64 / 1000) as u64);
 
             AlarmFuture::new(self).await;
         }
@@ -1102,6 +1123,10 @@ mod asynch {
                 .modify(|_, w| w.target0().clear_bit());
         });
 
+        // unsafe { &*crate::peripherals::SYSTIMER::PTR }
+        //     .int_clr()
+        //     .write(|w| w.target0().clear_bit_by_one());
+
         WAKERS[0].wake();
     }
 
@@ -1113,6 +1138,10 @@ mod asynch {
                 .modify(|_, w| w.target1().clear_bit());
         });
 
+        // unsafe { &*crate::peripherals::SYSTIMER::PTR }
+        //     .int_clr()
+        //     .write(|w| w.target1().clear_bit_by_one());
+
         WAKERS[1].wake();
     }
 
@@ -1123,6 +1152,10 @@ mod asynch {
                 .int_ena()
                 .modify(|_, w| w.target2().clear_bit());
         });
+
+        // unsafe { &*crate::peripherals::SYSTIMER::PTR }
+        //     .int_clr()
+        //     .write(|w| w.target2().clear_bit_by_one());
 
         WAKERS[2].wake();
     }
