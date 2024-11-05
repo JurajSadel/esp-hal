@@ -86,6 +86,9 @@ use crate::{
     InterruptConfigurable,
     Mode,
 };
+use portable_atomic::{AtomicU8, Ordering::Relaxed};
+
+static REF_COUNTER: AtomicU8 = AtomicU8::new(0);
 
 /// Custom USB serial error type
 type Error = Infallible;
@@ -111,6 +114,7 @@ where
     M: Mode,
 {
     fn new_inner() -> Self {
+        REF_COUNTER.fetch_add(1, Relaxed);
         Self {
             phantom: PhantomData,
         }
@@ -183,11 +187,24 @@ where
     }
 }
 
+impl <'d, M> Drop for UsbSerialJtagTx<'d, M> 
+{
+    fn drop(&mut self) {
+        REF_COUNTER.fetch_sub(1, Relaxed);
+
+        if REF_COUNTER.load(Relaxed) == 0 {
+            PeripheralClockControl::enable(crate::system::Peripheral::UsbDevice, false);
+        }
+        
+    }
+}
+
 impl<'d, M> UsbSerialJtagRx<'d, M>
 where
     M: Mode,
 {
     fn new_inner() -> Self {
+        REF_COUNTER.fetch_add(1, Relaxed);
         Self {
             phantom: PhantomData,
         }
@@ -258,6 +275,18 @@ where
     }
 }
 
+impl <'d, M> Drop for UsbSerialJtagRx<'d, M> 
+{
+    fn drop(&mut self) {
+        REF_COUNTER.fetch_sub(1, Relaxed);
+
+        if REF_COUNTER.load(Relaxed) == 0 {
+            PeripheralClockControl::enable(crate::system::Peripheral::UsbDevice, false);
+        }
+        
+    }
+}
+
 impl<'d> UsbSerialJtag<'d, Blocking> {
     /// Create a new USB serial/JTAG instance with defaults
     pub fn new(usb_device: impl Peripheral<P = USB_DEVICE> + 'd) -> Self {
@@ -280,8 +309,9 @@ where
     fn new_inner(_usb_device: impl Peripheral<P = USB_DEVICE> + 'd) -> Self {
         // Do NOT reset the peripheral. Doing so will result in a broken USB JTAG
         // connection.
-        PeripheralClockControl::enable(crate::system::Peripheral::UsbDevice);
+        PeripheralClockControl::enable(crate::system::Peripheral::UsbDevice, true);
 
+        REF_COUNTER.fetch_add(1, Relaxed);
         USB_DEVICE::disable_tx_interrupts();
         USB_DEVICE::disable_rx_interrupts();
 
@@ -320,7 +350,7 @@ where
     /// which is particularly useful when having two tasks correlating to
     /// transmitting and receiving.
     pub fn split(self) -> (UsbSerialJtagRx<'d, M>, UsbSerialJtagTx<'d, M>) {
-        (self.rx, self.tx)
+        (UsbSerialJtagRx::new_inner(), UsbSerialJtagTx::new_inner())
     }
 
     /// Write data to the serial output in chunks of up to 64 bytes
@@ -367,6 +397,17 @@ where
     /// Reset RX-PACKET-RECV interrupt
     pub fn reset_rx_packet_recv_interrupt(&mut self) {
         self.rx.reset_rx_packet_recv_interrupt()
+    }
+}
+
+impl<'d, M> Drop for UsbSerialJtag<'d, M>
+{
+    fn drop(&mut self) {
+        REF_COUNTER.fetch_sub(1, Relaxed);
+
+        if REF_COUNTER.load(Relaxed) == 0 {
+            PeripheralClockControl::enable(crate::system::Peripheral::UsbDevice, false);
+        }
     }
 }
 

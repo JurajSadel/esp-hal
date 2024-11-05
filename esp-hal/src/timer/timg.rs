@@ -86,6 +86,9 @@ use crate::{
     InterruptConfigurable,
     Mode,
 };
+use portable_atomic::{AtomicU8, Ordering::Relaxed};
+
+static REF_COUNTER: AtomicU8 = AtomicU8::new(0);
 
 const NUM_TIMG: usize = 1 + cfg!(timg1) as usize;
 
@@ -151,7 +154,7 @@ impl TimerGroupInstance for TIMG0 {
     }
 
     fn enable_peripheral() {
-        crate::system::PeripheralClockControl::enable(crate::system::Peripheral::Timg0)
+        crate::system::PeripheralClockControl::enable(crate::system::Peripheral::Timg0, true)
     }
 
     fn reset_peripheral() {
@@ -214,7 +217,7 @@ impl TimerGroupInstance for crate::peripherals::TIMG1 {
     }
 
     fn enable_peripheral() {
-        crate::system::PeripheralClockControl::enable(crate::system::Peripheral::Timg1)
+        crate::system::PeripheralClockControl::enable(crate::system::Peripheral::Timg1, true)
     }
 
     fn reset_peripheral() {
@@ -277,6 +280,8 @@ where
             },
             apb_clk_freq,
         );
+
+        REF_COUNTER.fetch_add(1 + cfg!(timg1) as u8, Relaxed);
 
         Self {
             _timer_group,
@@ -818,7 +823,7 @@ where
     TG: TimerGroupInstance,
 {
     fn enable_peripheral(&self) {
-        PeripheralClockControl::enable(PeripheralEnable::Timg0);
+        PeripheralClockControl::enable(PeripheralEnable::Timg0, true);
     }
 }
 
@@ -828,7 +833,7 @@ where
     TG: TimerGroupInstance,
 {
     fn enable_peripheral(&self) {
-        PeripheralClockControl::enable(PeripheralEnable::Timg1);
+        PeripheralClockControl::enable(PeripheralEnable::Timg1, true);
     }
 }
 
@@ -924,7 +929,7 @@ where
     /// Construct a new instance of [`Wdt`]
     pub fn new() -> Self {
         #[cfg(lp_wdt)]
-        PeripheralClockControl::enable(PeripheralEnable::Wdt);
+        PeripheralClockControl::enable(PeripheralEnable::Wdt, true);
 
         TG::configure_wdt_src_clk();
 

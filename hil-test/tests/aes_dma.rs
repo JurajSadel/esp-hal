@@ -26,6 +26,7 @@ mod tests {
     }
 
     #[test]
+    #[timeout(2)]
     fn test_aes_128_dma_encryption(peripherals: Peripherals) {
         let dma = Dma::new(peripherals.DMA);
         let dma_channel = dma.channel0;
@@ -68,6 +69,7 @@ mod tests {
     }
 
     #[test]
+    #[timeout(2)]
     fn test_aes_128_dma_decryption(peripherals: Peripherals) {
         let dma = Dma::new(peripherals.DMA);
         let dma_channel = dma.channel0;
@@ -109,6 +111,7 @@ mod tests {
     }
 
     #[test]
+    #[timeout(2)]
     fn test_aes_256_dma_encryption(peripherals: Peripherals) {
         let dma = Dma::new(peripherals.DMA);
         let dma_channel = dma.channel0;
@@ -151,6 +154,7 @@ mod tests {
     }
 
     #[test]
+    #[timeout(2)]
     fn test_aes_256_dma_decryption(peripherals: Peripherals) {
         let dma = Dma::new(peripherals.DMA);
         let dma_channel = dma.channel0;

@@ -351,7 +351,7 @@ where
         // the targets the same and force same configuration for both, TX and RX
 
         PeripheralClockControl::reset(I::get_peripheral());
-        PeripheralClockControl::enable(I::get_peripheral());
+        PeripheralClockControl::enable(I::get_peripheral(), true);
         I::set_clock(calculate_clock(sample_rate, 2, data_format.channel_bits()));
         I::configure(&standard, &data_format);
         I::set_master();

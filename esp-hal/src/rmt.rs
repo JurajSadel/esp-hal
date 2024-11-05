@@ -94,6 +94,10 @@ use crate::{
     InterruptConfigurable,
 };
 
+use portable_atomic::{AtomicU8, Ordering::Relaxed};
+
+static REF_COUNTER: AtomicU8 = AtomicU8::new(0);
+
 /// Errors
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -224,7 +228,7 @@ where
         }
 
         PeripheralClockControl::reset(crate::system::Peripheral::Rmt);
-        PeripheralClockControl::enable(crate::system::Peripheral::Rmt);
+        PeripheralClockControl::enable(crate::system::Peripheral::Rmt, true);
 
         cfg_if::cfg_if! {
             if #[cfg(any(esp32, esp32s2))] {
@@ -334,6 +338,8 @@ fn configure_rx_channel<
     T::set_filter_threshold(config.filter_threshold);
     T::set_idle_threshold(config.idle_threshold);
 
+    REF_COUNTER.fetch_add(1, Relaxed);
+
     Ok(T::new())
 }
 
@@ -358,6 +364,8 @@ fn configure_tx_channel<
         config.carrier_level,
     );
     T::set_idle_output(config.idle_output, config.idle_output_level);
+
+    REF_COUNTER.fetch_add(1, Relaxed);
 
     Ok(T::new())
 }
@@ -584,7 +592,7 @@ macro_rules! impl_tx_channel_creator {
         {
         }
 
-        impl $crate::rmt::asynch::TxChannelAsync for $crate::rmt::Channel<$crate::Async, $channel> {}
+        impl $crate::rmt::asynch::TxChannelAsync for $crate::rmt::Channel<$crate::Async, $channel> {} 
     };
 }
 
@@ -982,6 +990,16 @@ where
     M: crate::Mode,
 {
     phantom: PhantomData<M>,
+}
+
+impl<M: crate::Mode, const CHANNEL: u8> Drop for Channel<M, CHANNEL> {
+    fn drop(&mut self) {
+        REF_COUNTER.fetch_sub(1, Relaxed);
+
+        if REF_COUNTER.load(Relaxed) == 0 {
+            PeripheralClockControl::enable(crate::system::Peripheral::Rmt, false);
+        }
+    }
 }
 
 /// Channel in TX mode

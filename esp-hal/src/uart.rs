@@ -1563,7 +1563,7 @@ macro_rules! impl_instance {
             }
 
             fn enable_peripheral() {
-                PeripheralClockControl::enable(crate::system::Peripheral::$peri);
+                PeripheralClockControl::enable(crate::system::Peripheral::$peri, true);
             }
 
             fn reset_peripheral() {

@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn test_increment_on_pos_edge(ctx: Context<'static>) {
-        let unit = ctx.pcnt.unit0;
+        let unit = &ctx.pcnt.unit0;
 
         // Setup channel 0 to increment the count when gpio2 does LOW -> HIGH
         unit.channel0
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_increment_on_neg_edge(ctx: Context<'static>) {
-        let unit = ctx.pcnt.unit1;
+        let unit = &ctx.pcnt.unit1;
 
         // Setup channel 0 to increment the count when gpio2 does LOW -> HIGH
         unit.channel0
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_increment_past_high_limit(ctx: Context<'static>) {
-        let unit = ctx.pcnt.unit3;
+        let unit = &ctx.pcnt.unit3;
 
         unit.set_high_limit(Some(3)).unwrap();
 
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_increment_past_thresholds(ctx: Context<'static>) {
-        let unit = ctx.pcnt.unit0;
+        let unit = &ctx.pcnt.unit0;
 
         unit.set_threshold0(Some(2));
         unit.set_threshold1(Some(4));
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_decrement_past_low_limit(ctx: Context<'static>) {
-        let unit = ctx.pcnt.unit0;
+        let unit = &ctx.pcnt.unit0;
 
         unit.set_low_limit(Some(-3)).unwrap();
         // For some reason this is needed for the above limit to apply.
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_unit_count_range(ctx: Context<'static>) {
-        let unit = ctx.pcnt.unit2;
+        let unit = &ctx.pcnt.unit2;
 
         // Setup channel 1 to increment the count when gpio2 does LOW -> HIGH
         unit.channel1

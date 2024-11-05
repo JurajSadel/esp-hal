@@ -70,7 +70,7 @@ where
         crate::into_ref!(peripheral);
 
         PeripheralClockControl::reset(crate::system::Peripheral::Trace0);
-        PeripheralClockControl::enable(crate::system::Peripheral::Trace0);
+        PeripheralClockControl::enable(crate::system::Peripheral::Trace0, true);
 
         Self {
             peripheral,

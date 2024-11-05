@@ -78,7 +78,7 @@ impl<'d, DM: crate::Mode> Rsa<'d, DM> {
         crate::into_ref!(rsa);
 
         PeripheralClockControl::reset(PeripheralEnable::Rsa);
-        PeripheralClockControl::enable(PeripheralEnable::Rsa);
+        PeripheralClockControl::enable(PeripheralEnable::Rsa, true);
 
         Self {
             rsa,
@@ -146,6 +146,12 @@ impl<'d, DM: crate::Mode> Rsa<'d, DM> {
     fn read_results<const N: usize>(&mut self, outbuf: &mut [u32; N]) {
         self.wait_for_idle();
         self.read_out(outbuf);
+    }
+}
+
+impl<'d, DM: crate::Mode> Drop for Rsa<'d, DM> {
+    fn drop(&mut self) {
+        PeripheralClockControl::enable(PeripheralEnable::Rsa, false);
     }
 }
 

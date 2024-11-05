@@ -229,7 +229,10 @@ impl From<Ack> for u32 {
 }
 
 /// I2C peripheral container (I2C)
-pub struct I2C<'d, T, DM: crate::Mode> {
+pub struct I2C<'d, T, DM: crate::Mode> 
+where
+    T: Instance,
+    {
     peripheral: PeripheralRef<'d, T>,
     phantom: PhantomData<DM>,
     frequency: HertzU32,
@@ -458,7 +461,7 @@ where
     }
 }
 
-impl<T, DM: crate::Mode> embedded_hal::i2c::ErrorType for I2C<'_, T, DM> {
+impl<T: Instance, DM: crate::Mode> embedded_hal::i2c::ErrorType for I2C<'_, T, DM> {
     type Error = Error;
 }
 
@@ -492,7 +495,7 @@ where
         crate::into_ref!(i2c, sda, scl);
 
         PeripheralClockControl::reset(T::peripheral());
-        PeripheralClockControl::enable(T::peripheral());
+        PeripheralClockControl::enable(T::peripheral(), true);
 
         let i2c = I2C {
             peripheral: i2c,
@@ -542,7 +545,7 @@ where
 
     fn internal_recover(&self) {
         PeripheralClockControl::reset(T::peripheral());
-        PeripheralClockControl::enable(T::peripheral());
+        PeripheralClockControl::enable(T::peripheral(), true);
 
         self.peripheral.setup(self.frequency, self.timeout);
     }
@@ -578,6 +581,15 @@ where
         timeout: Option<u32>,
     ) -> Self {
         Self::new_internal(i2c, sda, scl, frequency, timeout)
+    }
+}
+
+impl<'d, T, DM: crate::Mode> Drop for I2C<'d, T, DM>
+where
+    T: Instance,
+{
+    fn drop(&mut self) {
+        PeripheralClockControl::enable(T::peripheral(), false);
     }
 }
 

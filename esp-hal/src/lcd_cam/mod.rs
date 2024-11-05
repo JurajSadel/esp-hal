@@ -33,7 +33,7 @@ impl<'d> LcdCam<'d, crate::Blocking> {
         crate::into_ref!(lcd_cam);
 
         PeripheralClockControl::reset(system::Peripheral::LcdCam);
-        PeripheralClockControl::enable(system::Peripheral::LcdCam);
+        PeripheralClockControl::enable(system::Peripheral::LcdCam, true);
 
         Self {
             lcd: Lcd {
@@ -68,7 +68,7 @@ impl<'d> LcdCam<'d, crate::Async> {
     pub fn new_async(lcd_cam: impl Peripheral<P = LCD_CAM> + 'd) -> Self {
         crate::into_ref!(lcd_cam);
 
-        PeripheralClockControl::enable(system::Peripheral::LcdCam);
+        PeripheralClockControl::enable(system::Peripheral::LcdCam, true);
 
         unsafe {
             crate::interrupt::bind_interrupt(
@@ -93,6 +93,12 @@ impl<'d> LcdCam<'d, crate::Async> {
         }
     }
 }
+
+// impl<'d, DM: crate::Mode> Drop for LcdCam<'d, DM> {
+//     fn drop(&mut self) {
+//         PeripheralClockControl::enable(system::Peripheral::LcdCam, false);
+//     }
+// }
 
 /// LCD_CAM bit order
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

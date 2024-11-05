@@ -48,6 +48,7 @@ mod tests {
     }
 
     #[test]
+    #[timeout(3)]
     async fn test_i8080_8bit(ctx: Context<'static>) {
         let channel = ctx.dma.channel0.configure(false, DmaPriority::Priority0);
         let pins = TxEightBits::new(NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin);
@@ -71,6 +72,7 @@ mod tests {
     }
 
     #[test]
+    #[timeout(3)]
     async fn test_i8080_8bit_async_channel(ctx: Context<'static>) {
         let channel = ctx
             .dma

@@ -65,7 +65,7 @@ impl<'d> Pcnt<'d> {
 
         // Enable the PCNT peripherals clock in the system peripheral
         PeripheralClockControl::reset(crate::system::Peripheral::Pcnt);
-        PeripheralClockControl::enable(crate::system::Peripheral::Pcnt);
+        PeripheralClockControl::enable(crate::system::Peripheral::Pcnt, true);
 
         let pcnt = unsafe { &*crate::peripherals::PCNT::ptr() };
 
@@ -106,6 +106,12 @@ impl<'d> Pcnt<'d> {
             #[cfg(esp32)]
             unit7: Unit::new(),
         }
+    }
+}
+
+impl<'d> Drop for Pcnt<'d> {
+    fn drop(&mut self) {
+        PeripheralClockControl::enable(crate::system::Peripheral::Pcnt, false);
     }
 }
 

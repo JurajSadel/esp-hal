@@ -72,7 +72,7 @@ impl<'d> Usb<'d> {
         M: UsbDm + Send + Sync,
     {
         PeripheralClockControl::reset(PeripheralEnable::Usb);
-        PeripheralClockControl::enable(PeripheralEnable::Usb);
+        PeripheralClockControl::enable(PeripheralEnable::Usb, true);
 
         Self {
             _usb0: usb0.into_ref(),
@@ -113,6 +113,12 @@ impl<'d> Usb<'d> {
 
     fn _disable() {
         // TODO
+    }
+}
+
+impl<'d> Drop for Usb<'d> {
+    fn drop(&mut self) {
+        PeripheralClockControl::enable(PeripheralEnable::Usb, false);
     }
 }
 

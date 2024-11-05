@@ -620,7 +620,7 @@ where
         mode: SpiMode,
     ) -> Spi<'d, T, FullDuplexMode> {
         spi.reset_peripheral();
-        spi.enable_peripheral();
+        spi.enable_peripheral(true);
 
         let mut spi = Spi {
             spi,
@@ -768,7 +768,7 @@ where
         mode: SpiMode,
     ) -> Spi<'d, T, HalfDuplexMode> {
         spi.reset_peripheral();
-        spi.enable_peripheral();
+        spi.enable_peripheral(true);
 
         let mut spi = Spi {
             spi,
@@ -2372,8 +2372,8 @@ pub trait Instance: private::Sealed + PeripheralMarker {
     fn cs_signal(&self) -> OutputSignal;
 
     #[inline(always)]
-    fn enable_peripheral(&self) {
-        PeripheralClockControl::enable(self.peripheral());
+    fn enable_peripheral(&self, enable: bool) {
+        PeripheralClockControl::enable(self.peripheral(), enable);
     }
 
     #[inline(always)]

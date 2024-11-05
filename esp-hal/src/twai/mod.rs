@@ -1595,7 +1595,7 @@ impl Instance for crate::peripherals::TWAI0 {
     }
 
     fn enable_peripheral() {
-        PeripheralClockControl::enable(crate::system::Peripheral::Twai0);
+        PeripheralClockControl::enable(crate::system::Peripheral::Twai0, true);
     }
 
     fn enable_interrupts() {
@@ -1647,7 +1647,7 @@ impl Instance for crate::peripherals::TWAI1 {
     }
 
     fn enable_peripheral() {
-        PeripheralClockControl::enable(crate::system::Peripheral::Twai1);
+        PeripheralClockControl::enable(crate::system::Peripheral::Twai1, true);
     }
 
     fn enable_interrupts() {

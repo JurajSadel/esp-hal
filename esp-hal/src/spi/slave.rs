@@ -133,7 +133,7 @@ where
         mode: SpiMode,
     ) -> Spi<'d, T, FullDuplexMode> {
         spi.reset_peripheral();
-        spi.enable_peripheral();
+        spi.enable_peripheral(true);
 
         let mut spi = Spi {
             spi,
@@ -562,8 +562,8 @@ pub trait Instance: private::Sealed + PeripheralMarker {
     }
 
     #[inline(always)]
-    fn enable_peripheral(&self) {
-        PeripheralClockControl::enable(self.peripheral());
+    fn enable_peripheral(&self, enable: bool) {
+        PeripheralClockControl::enable(self.peripheral(), enable);
     }
 
     fn spi_num(&self) -> u8;

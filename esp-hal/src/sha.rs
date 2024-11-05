@@ -80,7 +80,7 @@ impl<'d> Sha<'d> {
         crate::into_ref!(sha);
 
         PeripheralClockControl::reset(crate::system::Peripheral::Sha);
-        PeripheralClockControl::enable(crate::system::Peripheral::Sha);
+        PeripheralClockControl::enable(crate::system::Peripheral::Sha, true);
 
         Self { sha }
     }
@@ -95,6 +95,12 @@ impl<'d> Sha<'d> {
     /// struct.
     pub fn start_owned<A: ShaAlgorithm>(self) -> ShaDigest<'d, A, Self> {
         ShaDigest::new(self)
+    }
+}
+
+impl<'d> Drop for Sha<'d> {
+    fn drop(&mut self) {
+        PeripheralClockControl::enable(crate::system::Peripheral::Sha, false);
     }
 }
 

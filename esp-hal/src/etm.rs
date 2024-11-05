@@ -154,12 +154,18 @@ macro_rules! create_etm {
                     crate::into_ref!(peripheral);
 
                     PeripheralClockControl::reset(crate::system::Peripheral::Etm);
-                    PeripheralClockControl::enable(crate::system::Peripheral::Etm);
+                    PeripheralClockControl::enable(crate::system::Peripheral::Etm, true);
 
                     Self {
                         _peripheral: peripheral,
                         $([< channel $num >]: EtmChannel {},)+
                     }
+                }
+            }
+
+            impl<'d> Drop for Etm<'d> {
+                fn drop(&mut self) {
+                    PeripheralClockControl::enable(crate::system::Peripheral::Etm, false);
                 }
             }
         }
