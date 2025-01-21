@@ -13,13 +13,14 @@ use crate::{
         OutputPin,
         OutputSignalType,
         Pin,
+        PinGuard,
         Pull,
         FUNC_IN_SEL_OFFSET,
         GPIO_FUNCTION,
         INPUT_SIGNAL_MAX,
         OUTPUT_SIGNAL_MAX,
     },
-    peripheral::Peripheral,
+    peripheral::{Peripheral, PeripheralRef},
     peripherals::GPIO,
     private::{self, Sealed},
 };
@@ -106,7 +107,6 @@ impl gpio::OutputSignal {
     pub fn connect_to(self, pin: impl Peripheral<P = impl PeripheralOutput>) {
         crate::into_mapped_ref!(pin);
 
-        // FIXME: disconnect previous connection(s)
         pin.connect_peripheral_to_output(self);
     }
 
@@ -716,6 +716,21 @@ impl OutputConnection {
             // These don't need to be public, the intended way is `connect_to` and `disconnect_from`
             fn connect_peripheral_to_output(&mut self, signal: gpio::OutputSignal);
             fn disconnect_from_peripheral_output(&mut self, signal: gpio::OutputSignal);
+        }
+    }
+
+    pub(crate) fn connect_with_guard(
+        this: PeripheralRef<'_, Self>,
+        signal: crate::gpio::OutputSignal,
+    ) -> PinGuard {
+        match &this.0 {
+            OutputConnectionInner::Output(pin) => {
+                PinGuard::new(unsafe { pin.pin.clone_unchecked() }, signal)
+            }
+            OutputConnectionInner::DirectOutput(pin) => {
+                PinGuard::new(unsafe { pin.pin.clone_unchecked() }, signal)
+            }
+            OutputConnectionInner::Constant(_) => PinGuard::new_unconnected(signal),
         }
     }
 }

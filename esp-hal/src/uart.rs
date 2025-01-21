@@ -234,9 +234,10 @@ use crate::{
     asynch::AtomicWaker,
     clock::Clocks,
     gpio::{
-        interconnect::{PeripheralInput, PeripheralOutput},
+        interconnect::{OutputConnection, PeripheralInput, PeripheralOutput},
         InputSignal,
         OutputSignal,
+        PinGuard,
         Pull,
     },
     interrupt::{InterruptConfigurable, InterruptHandler},
@@ -498,6 +499,8 @@ where
         let rx_guard = PeripheralGuard::new(self.uart.parts().0.peripheral);
         let tx_guard = PeripheralGuard::new(self.uart.parts().0.peripheral);
 
+        let tx_pin = PinGuard::new_unconnected(self.uart.info().tx_signal);
+
         let mut serial = Uart {
             rx: UartRx {
                 uart: unsafe { self.uart.clone_unchecked() },
@@ -508,6 +511,7 @@ where
                 uart: self.uart,
                 phantom: PhantomData,
                 guard: tx_guard,
+                tx_pin,
             },
         };
         serial.init(config)?;
@@ -527,6 +531,7 @@ pub struct UartTx<'d, Dm> {
     uart: PeripheralRef<'d, AnyUart>,
     phantom: PhantomData<Dm>,
     guard: PeripheralGuard,
+    tx_pin: PinGuard,
 }
 
 /// UART (Receive)
@@ -619,12 +624,14 @@ where
     ///
     /// Sets the specified pin to push-pull output and connects it to the UART
     /// TX signal.
-    pub fn with_tx(self, tx: impl Peripheral<P = impl PeripheralOutput> + 'd) -> Self {
+    ///
+    /// Calling this will replace previous pin assignments for this signal.
+    pub fn with_tx(mut self, tx: impl Peripheral<P = impl PeripheralOutput> + 'd) -> Self {
         crate::into_mapped_ref!(tx);
         // Make sure we don't cause an unexpected low pulse on the pin.
         tx.set_output_high(true);
         tx.set_to_push_pull_output();
-        self.uart.info().tx_signal.connect_to(tx);
+        self.tx_pin = OutputConnection::connect_with_guard(tx, self.uart.info().tx_signal);
 
         self
     }
@@ -729,6 +736,7 @@ impl<'d> UartTx<'d, Blocking> {
             uart: self.uart,
             phantom: PhantomData,
             guard: self.guard,
+            tx_pin: self.tx_pin,
         }
     }
 }
@@ -748,6 +756,7 @@ impl<'d> UartTx<'d, Async> {
             uart: self.uart,
             phantom: PhantomData,
             guard: self.guard,
+            tx_pin: self.tx_pin,
         }
     }
 }
@@ -1035,11 +1044,8 @@ impl<'d> Uart<'d, Blocking> {
     /// configure the driver side (i.e. the TX pin), or ensure that the line is
     /// initially high, to avoid receiving a non-data byte caused by an
     /// initial low signal level.
-    pub fn with_rx(self, rx: impl Peripheral<P = impl PeripheralInput> + 'd) -> Self {
-        crate::into_mapped_ref!(rx);
-        rx.init_input(Pull::Up);
-        self.rx.uart.info().rx_signal.connect_to(rx);
-
+    pub fn with_rx(mut self, rx: impl Peripheral<P = impl PeripheralInput> + 'd) -> Self {
+        self.rx = self.rx.with_rx(rx);
         self
     }
 
@@ -1047,13 +1053,8 @@ impl<'d> Uart<'d, Blocking> {
     ///
     /// Sets the specified pin to push-pull output and connects it to the UART
     /// TX signal.
-    pub fn with_tx(self, tx: impl Peripheral<P = impl PeripheralOutput> + 'd) -> Self {
-        crate::into_mapped_ref!(tx);
-        // Make sure we don't cause an unexpected low pulse on the pin.
-        tx.set_output_high(true);
-        tx.set_to_push_pull_output();
-        self.tx.uart.info().tx_signal.connect_to(tx);
-
+    pub fn with_tx(mut self, tx: impl Peripheral<P = impl PeripheralOutput> + 'd) -> Self {
+        self.tx = self.tx.with_tx(tx);
         self
     }
 }
