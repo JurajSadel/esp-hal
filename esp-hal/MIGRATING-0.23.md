@@ -115,6 +115,8 @@ periodic.start(100.millis()).unwrap();
 + periodic.wait();
 ```
 
+- PinGuard has been introduced for `UartTx` and calling `with_tx()` multiple times in a row will replace previous assignments for the signal.
+
 ## SPI Changes
 
 `spi::DataMode` changed the meaning of `DataMode::Single` - it now means 3-wire SPI (using one data line).
@@ -127,3 +129,9 @@ Use `DataMode::SingleTwoDataLines` to get the previous behavior.
 ```
 
 `Spi` now offers both, `with_mosi` and `with_sio0`. Consider using `with_sio` for half-duplex SPI except for [DataMode::SingleTwoDataLines] or for a mixed-bus.
+
+- PinGuard has been introduced for `Spi` and calling `with_mosi`, `with_sio0`, `with_sio1`, `with_sck`, `with_cs`, `with_sio2`, `with_sio3` multiple times in a row will replace previous assignments for the signal.
+
+## I2C Changes
+
+- PinGuard has been introduced for `I2c` and calling `with_sda`, `with_scl` multiple times in a row will replace previous assignments for the signal.
