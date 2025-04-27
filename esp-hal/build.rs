@@ -9,7 +9,7 @@ use std::{
 };
 
 use esp_build::assert_unique_used_features;
-use esp_config::{ConfigOption, Stability, Validator, Value, generate_config};
+use esp_config::{generate_config, ConfigOption, Stability, Validator, Value};
 use esp_metadata::{Chip, Config};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -139,7 +139,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             },
             ConfigOption {
                 name: "flip-link",
-                description: "Move the stack to start of RAM to get zero-cost stack overflow protection.",
+                description:
+                    "Move the stack to start of RAM to get zero-cost stack overflow protection.",
                 default_value: Value::Bool(false),
                 constraint: None,
                 stability: Stability::Unstable,
@@ -231,10 +232,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             REGION_ALIAS("RWTEXT", iram_seg);
             REGION_ALIAS("RODATA", drom_seg);
             REGION_ALIAS("RWDATA", dram_seg);
-            REGION_ALIAS("RTC_FAST_RWTEXT", {});
-            REGION_ALIAS("RTC_FAST_RWDATA", {});
+            REGION_ALIAS("RTC_FAST_RWTEXT", {irtc});
+            REGION_ALIAS("RTC_FAST_RWDATA", {drtc});
         "#,
-            irtc, drtc
         );
 
         fs::write(out.join("alias.x"), alias)?;
