@@ -120,6 +120,7 @@ macro_rules! rtcio_analog {
 }
 
 #[rustfmt::skip]
+#[macro_use]
 macro_rules! touch_out_reg {
     ($regs:expr, 0) => { $regs.sar_touch_out1() };
     ($regs:expr, 1) => { $regs.sar_touch_out1() };
@@ -134,17 +135,11 @@ macro_rules! touch_out_reg {
 }
 
 #[rustfmt::skip]
+#[macro_use]
 macro_rules! touch_thres_reg {
-    ($regs:expr, 0) => { $regs.sar_touch_thres1() };
-    ($regs:expr, 1) => { $regs.sar_touch_thres1() };
-    ($regs:expr, 2) => { $regs.sar_touch_thres2() };
-    ($regs:expr, 3) => { $regs.sar_touch_thres2() };
-    ($regs:expr, 4) => { $regs.sar_touch_thres3() };
-    ($regs:expr, 5) => { $regs.sar_touch_thres3() };
-    ($regs:expr, 6) => { $regs.sar_touch_thres4() };
-    ($regs:expr, 7) => { $regs.sar_touch_thres4() };
-    ($regs:expr, 8) => { $regs.sar_touch_thres5() };
-    ($regs:expr, 9) => { $regs.sar_touch_thres5() };
+    ($regs:expr, $num:tt) => {
+        touch_thres_reg_any($regs, $num)
+    };
 }
 
 #[rustfmt::skip]
@@ -162,31 +157,18 @@ macro_rules! touch_pad_reg {
 }
 
 #[rustfmt::skip]
+#[macro_use]
 macro_rules! touch_out_th_field {
-    ($accessor:expr, 0) => { $accessor.touch_out_th0() };
-    ($accessor:expr, 1) => { $accessor.touch_out_th1() };
-    ($accessor:expr, 2) => { $accessor.touch_out_th0() };
-    ($accessor:expr, 3) => { $accessor.touch_out_th1() };
-    ($accessor:expr, 4) => { $accessor.touch_out_th0() };
-    ($accessor:expr, 5) => { $accessor.touch_out_th1() };
-    ($accessor:expr, 6) => { $accessor.touch_out_th0() };
-    ($accessor:expr, 7) => { $accessor.touch_out_th1() };
-    ($accessor:expr, 8) => { $accessor.touch_out_th0() };
-    ($accessor:expr, 9) => { $accessor.touch_out_th1() };
+    ($w:expr, $num:tt) => {
+        touch_out_th_field_any($w, $num)
+    };
 }
 
 #[rustfmt::skip]
 macro_rules! touch_meas_out_field {
-    ($accessor:expr, 0) => { $accessor.touch_meas_out0() };
-    ($accessor:expr, 1) => { $accessor.touch_meas_out1() };
-    ($accessor:expr, 2) => { $accessor.touch_meas_out0() };
-    ($accessor:expr, 3) => { $accessor.touch_meas_out1() };
-    ($accessor:expr, 4) => { $accessor.touch_meas_out0() };
-    ($accessor:expr, 5) => { $accessor.touch_meas_out1() };
-    ($accessor:expr, 6) => { $accessor.touch_meas_out0() };
-    ($accessor:expr, 7) => { $accessor.touch_meas_out1() };
-    ($accessor:expr, 8) => { $accessor.touch_meas_out0() };
-    ($accessor:expr, 9) => { $accessor.touch_meas_out1() };
+    ($r:expr, $num:tt) => {
+        touch_meas_out_field_any($r, $num)
+    };
 }
 
 /// Common functionality for all touch pads
@@ -324,44 +306,120 @@ touch! {
     (9, GPIO32)
 }
 
-impl<'lt> $crate::gpio::TouchPin for $crate::gpio::AnyTouchPin<'lt> {
-    fn set_touch(&self, _: $crate::private::Internal) {
-        use $crate::peripherals::{RTC_IO, SENS};
+fn touch_thres_reg_any(
+    sens: &crate::peripherals::SENS,
+    num: u8,
+) -> -> &crate::generic::Reg<u32> {
+    match num {
+        0 => sens.sar_touch_thres1(),
+        1 => sens.sar_touch_thres1(),
+        2 => sens.sar_touch_thres2(),
+        3 => sens.sar_touch_thres2(),
+        4 => sens.sar_touch_thres3(),
+        5 => sens.sar_touch_thres3(),
+        6 => sens.sar_touch_thres4(),
+        7 => sens.sar_touch_thres4(),
+        8 => sens.sar_touch_thres5(),
+        9 => sens.sar_touch_thres5(),
+        _ => panic!("invalid touch pin"),
+    }
+}
+
+fn touch_out_th_field_any<'a>(
+    w: &'a mut crate::peripherals::saradc::SAR_TOUCH_THRES_W,
+    num: u8,
+) -> &'a mut crate::peripherals::saradc::SAR_TOUCH_OUT_THRES_W {
+    match num {
+        0 => w.touch_out_th0(),
+        1 => w.touch_out_th1(),
+        2 => w.touch_out_th2(),
+        3 => w.touch_out_th3(),
+        4 => w.touch_out_th4(),
+        5 => w.touch_out_th5(),
+        6 => w.touch_out_th6(),
+        7 => w.touch_out_th7(),
+        8 => w.touch_out_th8(),
+        9 => w.touch_out_th9(),
+        _ => panic!("invalid touch pin"),
+    }
+}
+
+fn touch_out_reg_any(
+    sens: &crate::peripherals::SENS,
+    num: u8,
+) -> crate::peripherals::saradc::SAR_TOUCH_OUT {
+    match num {
+        0 => sens.sar_touch_out1(),
+        1 => sens.sar_touch_out1(),
+        2 => sens.sar_touch_out2(),
+        3 => sens.sar_touch_out2(),
+        4 => sens.sar_touch_out3(),
+        5 => sens.sar_touch_out3(),
+        6 => sens.sar_touch_out4(),
+        7 => sens.sar_touch_out4(),
+        8 => sens.sar_touch_out5(),
+        9 => sens.sar_touch_out5(),
+        _ => panic!("invalid touch pin"),
+    }
+}
+
+fn touch_meas_out_field_any<'a>(
+    r: &'a crate::peripherals::saradc::SAR_TOUCH_OUT_R,
+    num: u8,
+) -> &'a crate::peripherals::saradc::SAR_TOUCH_MEAS_OUT_R {
+    match num {
+        0 => r.touch_meas_out0(),
+        1 => r.touch_meas_out1(),
+        2 => r.touch_meas_out2(),
+        3 => r.touch_meas_out3(),
+        4 => r.touch_meas_out4(),
+        5 => r.touch_meas_out5(),
+        6 => r.touch_meas_out6(),
+        7 => r.touch_meas_out7(),
+        8 => r.touch_meas_out8(),
+        9 => r.touch_meas_out9(),
+        _ => panic!("invalid touch pin"),
+    }
+}
+
+use crate::private;
+#[cfg(touch)]
+impl<'lt> gpio::TouchPin for gpio::AnyTouchPin<'lt> {
+    fn set_touch(&self, _: private::Internal) {
+        use crate::peripherals::{RTC_IO, SENS};
 
         let sens = SENS::regs();
 
-        // Default threshold = 0 (gets overridden later anyway)
-        touch_thres_reg!(sens, self.touch_num).write(|w| unsafe {
-            touch_out_th_field!(w, self.touch_num).bits(0)
-        });
+        // Default threshold = 0
 
-        touch_pad_reg!(RTC_IO::regs(), self.touch_num).write(|w| unsafe {
+        touch_thres_reg_any(sens, self.touch_num)
+            .write(|w| unsafe { touch_out_th_field_any(w, self.touch_num).bits(0) });
+
+        touch_pad_reg_any(RTC_IO::regs(), self.touch_num).write(|w| unsafe {
             w.xpd().set_bit();
             w.tie_opt().clear_bit();
             w
         });
 
-        // Enable the pin
         sens.sar_touch_enable().modify(|r, w| unsafe {
             w.touch_pad_worken()
                 .bits(r.touch_pad_worken().bits() | (1 << self.touch_num))
         });
     }
 
-    fn touch_measurement(&self, _: $crate::private::Internal) -> u16 {
-        let regs = $crate::peripherals::SENS::regs();
-        let reg = touch_out_reg!(regs, self.touch_num).read();
-        touch_meas_out_field!(reg, self.touch_num).bits()
+    fn touch_measurement(&self, _: private::Internal) -> u16 {
+        let regs = crate::peripherals::SENS::regs();
+        let reg = touch_out_reg_any(regs, self.touch_num).read();
+        touch_out_th_field_any(reg, self.touch_num).bits()
     }
 
-    fn touch_nr(&self, _: $crate::private::Internal) -> u8 {
+    fn touch_nr(&self, _: private::Internal) -> u8 {
         self.touch_num
     }
 
-    fn set_threshold(&self, threshold: u16, _: $crate::private::Internal) {
-        let sens = $crate::peripherals::SENS::regs();
-        touch_thres_reg!(sens, self.touch_num).write(|w| unsafe {
-            touch_out_th_field!(w, self.touch_num).bits(threshold)
-        });
+    fn set_threshold(&self, threshold: u16, _: private::Internal) {
+        let sens = crate::peripherals::SENS::regs();
+        touch_thres_reg_any(sens, self.touch_num)
+            .write(|w| unsafe { touch_out_th_field_any(w, self.touch_num).bits(threshold) });
     }
 }

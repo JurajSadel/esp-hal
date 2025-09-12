@@ -675,7 +675,6 @@ impl<'lt> AnyTouchPin<'lt> {
     }
 }
 
-
 /// General Purpose Input/Output driver
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
