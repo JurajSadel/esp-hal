@@ -16,6 +16,7 @@ use esp_backtrace as _;
 use esp_hal::{
     Blocking,
     delay::Delay,
+    gpio::TouchPin,
     handler,
     main,
     peripherals::GPIO4,
@@ -56,6 +57,8 @@ fn main() -> ! {
 
     let touch_pin0 = peripherals.GPIO2;
     let touch_pin1 = peripherals.GPIO4;
+
+    let touch_pin0 = touch_pin0.degrade_to_touch();
 
     let touch_cfg = Some(TouchConfig {
         measurement_duration: Some(0x2000),

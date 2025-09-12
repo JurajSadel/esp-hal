@@ -490,6 +490,15 @@ pub trait TouchPin: Pin {
     /// Set a pins touch threshold for interrupts.
     #[doc(hidden)]
     fn set_threshold(&self, threshold: u16, _: private::Internal);
+
+    /// Type-erase this pin into an [`AnyTouchPin`].
+    fn degrade_to_touch<'d>(self) -> AnyTouchPin<'d>
+    where
+        Self: Sized + 'd,
+    {
+        let touch_num = self.touch_nr(private::Internal);
+        unsafe { AnyTouchPin::steal(touch_num) }
+    }
 }
 
 #[doc(hidden)]
@@ -616,6 +625,56 @@ pub struct AnyPin<'lt> {
     pub(crate) pin: u8,
     pub(crate) _lifetime: core::marker::PhantomData<&'lt mut ()>,
 }
+
+/// Type-erased, touch-capable pin. Only stores the touch number.
+#[derive(Debug)]
+pub struct AnyTouchPin<'lt> {
+    pub(crate) touch_num: u8, // Only store touch number
+    pub(crate) _lifetime: core::marker::PhantomData<&'lt mut ()>,
+}
+
+impl<'lt> AnyTouchPin<'lt> {
+    #[procmacros::doc_replace]
+    /// Conjure a new AnyTouchPin pin out of thin air.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that only one instance of a pin is in use at one time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pin with the given number does not exist.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// #
+    /// use esp_hal::gpio::AnyTouchPin;
+    /// let pin = unsafe { AnyTouchPin::steal(1) };
+    /// #
+    /// # {after_snippet}
+    /// ```
+    pub unsafe fn steal(touch_num: u8) -> Self {
+        const VALID_TOUCH_PINS: &[u8] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        assert!(
+            VALID_TOUCH_PINS.contains(&touch_num),
+            "Touch pin {} does not exist",
+            touch_num
+        );
+
+        Self {
+            touch_num,
+            _lifetime: core::marker::PhantomData,
+        }
+    }
+
+    /// Get the touch sensor number
+    pub fn touch_number(&self) -> u8 {
+        self.touch_num
+    }
+}
+
 
 /// General Purpose Input/Output driver
 #[derive(Debug)]

@@ -323,3 +323,45 @@ touch! {
     (8, GPIO33)
     (9, GPIO32)
 }
+
+impl<'lt> $crate::gpio::TouchPin for $crate::gpio::AnyTouchPin<'lt> {
+    fn set_touch(&self, _: $crate::private::Internal) {
+        use $crate::peripherals::{RTC_IO, SENS};
+
+        let sens = SENS::regs();
+
+        // Default threshold = 0 (gets overridden later anyway)
+        touch_thres_reg!(sens, self.touch_num).write(|w| unsafe {
+            touch_out_th_field!(w, self.touch_num).bits(0)
+        });
+
+        touch_pad_reg!(RTC_IO::regs(), self.touch_num).write(|w| unsafe {
+            w.xpd().set_bit();
+            w.tie_opt().clear_bit();
+            w
+        });
+
+        // Enable the pin
+        sens.sar_touch_enable().modify(|r, w| unsafe {
+            w.touch_pad_worken()
+                .bits(r.touch_pad_worken().bits() | (1 << self.touch_num))
+        });
+    }
+
+    fn touch_measurement(&self, _: $crate::private::Internal) -> u16 {
+        let regs = $crate::peripherals::SENS::regs();
+        let reg = touch_out_reg!(regs, self.touch_num).read();
+        touch_meas_out_field!(reg, self.touch_num).bits()
+    }
+
+    fn touch_nr(&self, _: $crate::private::Internal) -> u8 {
+        self.touch_num
+    }
+
+    fn set_threshold(&self, threshold: u16, _: $crate::private::Internal) {
+        let sens = $crate::peripherals::SENS::regs();
+        touch_thres_reg!(sens, self.touch_num).write(|w| unsafe {
+            touch_out_th_field!(w, self.touch_num).bits(threshold)
+        });
+    }
+}
