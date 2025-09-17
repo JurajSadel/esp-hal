@@ -9,7 +9,7 @@ mod chip_specific;
 mod buffer;
 mod common;
 
-pub use common::{FlashStorage, FlashStorageError};
+pub use common::{FlashSingleton, FlashStorage, FlashStorageError};
 
 pub mod ll;
 mod nor_flash;

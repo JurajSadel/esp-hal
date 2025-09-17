@@ -1,6 +1,11 @@
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, sync::atomic::Ordering};
+
+use portable_atomic::AtomicBool;
 
 use crate::chip_specific;
+
+// This flag ensures the singleton can only be created once.
+static IS_TAKEN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -32,18 +37,36 @@ pub fn check_rc(rc: i32) -> Result<(), FlashStorageError> {
     }
 }
 
+// A zero-sized helper type that ensures only one instance of FlashStorage is created.
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FlashSingleton {
+    _private: (),
+}
+
+impl FlashSingleton {
+    /// Takes the unique singleton token.
+    ///
+    /// Returns `Some(token)` on the first call, and `None` on all subsequent calls.
+    pub fn take() -> Option<Self> {
+        if !IS_TAKEN.fetch_or(true, Ordering::Acquire) {
+            // If the exchange succeeded, the original value was `false`.
+            // This is the first call, so we can safely return the token.
+            Some(Self { _private: () })
+        } else {
+            // The flag was already `true`. Someone else has the token.
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 /// Flash storage abstraction.
 pub struct FlashStorage {
     pub(crate) capacity: usize,
     unlocked: bool,
-}
-
-impl Default for FlashStorage {
-    fn default() -> Self {
-        Self::new()
-    }
+    _singleton: FlashSingleton,
 }
 
 impl FlashStorage {
@@ -53,10 +76,11 @@ impl FlashStorage {
     pub const SECTOR_SIZE: u32 = 4096;
 
     /// Create a new flash storage instance.
-    pub fn new() -> FlashStorage {
+    pub fn new(singleton: FlashSingleton) -> FlashStorage {
         let mut storage = FlashStorage {
             capacity: 0,
             unlocked: false,
+            _singleton: singleton,
         };
 
         #[cfg(not(any(feature = "esp32", feature = "esp32s2")))]
