@@ -89,6 +89,10 @@ name    = "misc_simple"
 harness = false
 
 [[bin]]
+name    = "multicore"
+harness = false
+
+[[bin]]
 name    = "qspi"
 harness = false
 
