@@ -264,20 +264,20 @@ jobs:
         working-directory: ./qa-test
         run: |
           echo 'RESULT<<EOF' >> $GITHUB_OUTPUT
-          cargo size  --release --features=esp32c6 --target=riscv32imac-unknown-none-elf >> $GITHUB_OUTPUT
+          cargo build --release --bin sleep_timer --features esp32c6 --target riscv32imac-unknown-none-elf >> $GITHUB_OUTPUT
           echo 'EOF' >> $GITHUB_OUTPUT
         id: new-size-basic
-      - name: Build new advanced binary
-        working-directory: .//examples/wifi/embassy_dhcp
-        run: |
-          echo 'RESULT<<EOF' >> $GITHUB_OUTPUT
-          cargo size  --release --features=esp32c6 --target=riscv32imac-unknown-none-elf >> $GITHUB_OUTPUT
-          echo 'EOF' >> $GITHUB_OUTPUT
-        id: new-size-advanced
+      # - name: Build new advanced binary
+      #   working-directory: ./examples/wifi/embassy_dhcp
+      #   run: |
+      #     echo 'RESULT<<EOF' >> $GITHUB_OUTPUT
+      #     cargo build  --release --features=esp32c6 --target=riscv32imac-unknown-none-elf >> $GITHUB_OUTPUT
+      #     echo 'EOF' >> $GITHUB_OUTPUT
+      #   id: new-size-advanced
       - name: Save binary
         run: |
           mv ./qa-test/target/riscv32imac-unknown-none-elf/release/sleep-timer ./qa-test/target/riscv32imac-unknown-none-elf/release/original_basic.elf
-          mv ./examples/wifi/embassy_dhcp/target/riscv32imac-unknown-none-elf/release/embassy-dhcp ././examples/wifi/embassy_dhcp/target/riscv32imac-unknown-none-elf/release/original_advanced.elf
+        # mv ./examples/wifi/embassy_dhcp/target/riscv32imac-unknown-none-elf/release/embassy-dhcp ././examples/wifi/embassy_dhcp/target/riscv32imac-unknown-none-elf/release/original_advanced.elf
 
       - name: If it's a PR checkout the base commit
         if: ${{ github.event.pull_request }}
@@ -287,8 +287,8 @@ jobs:
         run: |
           cd qa-test
           cargo build --release --bin sleep_timer --features esp32c6 --target riscv32imac-unknown-none-elf
-          cd ../examples/wifi/embassy_dhcp
-          cargo build --release --features=esp32c6 --target=riscv32imac-unknown-none-elf
+        # cd ../examples/wifi/embassy_dhcp
+        # cargo build --release --features=esp32c6 --target=riscv32imac-unknown-none-elf
       - name: Run Bloaty to compare both output files
         if: ${{ github.event.pull_request }}
         id: bloaty-comparison
