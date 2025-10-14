@@ -5,44 +5,8 @@ on:
     types: [created, edited]
 
 jobs:
-  parse-command:
-    if: ${{ github.event.issue.pull_request }}
-    runs-on: ubuntu-latest
-    outputs:
-      chips: ${{ steps.parse.outputs.chips }}
-      should-run: ${{ steps.parse.outputs.should-run }}
-    steps:
-      - name: Parse slash command
-        id: parse
-        run: |
-          COMMENT="${{ github.event.comment.body }}"
-
-          if [[ "$COMMENT" =~ ^/test-size ]]; then
-            echo "should-run=true" >> $GITHUB_OUTPUT
-
-            # Extract all arguments after /test-size
-            ARGS="${COMMENT#/test-size}"
-            ARGS=$(echo "$ARGS" | xargs)  # trim spaces
-
-            if [[ -n "$ARGS" ]]; then
-              read -ra CHIPS <<< "$ARGS"
-            else
-              CHIPS=("esp32c6")
-            fi
-
-            # Convert array to JSON for output
-            CHIPS_JSON=$(printf '%s\n' "${CHIPS[@]}" | jq -R . | jq -s .)
-            echo "chips=$CHIPS_JSON" >> $GITHUB_OUTPUT
-
-            echo "Chips to test: ${CHIPS[@]}"
-          else
-            echo "should-run=false" >> $GITHUB_OUTPUT
-          fi
-
-
   setup-toolchain:
-    needs: parse-command
-    if: ${{ needs.parse-command.outputs.should-run == 'true' }}
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
     runs-on: ubuntu-latest
     steps:
       - name: Install RISC-V toolchain
@@ -60,163 +24,129 @@ jobs:
       - name: Install cargo-binutils
         run: cargo install cargo-binutils
 
-  analyze-binary:
-    needs: [parse-command, setup-toolchain]
-    if: ${{ needs.parse-command.outputs.should-run == 'true' }}
+  sleep-timer-esp32:
+    needs: setup-toolchain
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      pull-requests: write
-      contents: read
-    
-    strategy:
-      matrix:
-        chip: ${{ fromJSON(needs.parse-command.outputs.chips) }}
-        example:
-          - name: sleep_timer
-            path: qa-test
-            build_cmd: "--bin sleep_timer"
-          - name: embassy_dhcp
-            path: examples/wifi/embassy_dhcp
-            build_cmd: ""
-    
     steps:
-      - name: Set target for ${{ matrix.chip }}
-        id: set-target
-        run: |
-          case "${{ matrix.chip }}" in
-            esp32c6|esp32c2|esp32h2) 
-              TARGET="riscv32imac-unknown-none-elf"
-              ;;
-            esp32c3)
-              TARGET="riscv32imc-unknown-none-elf"
-              ;;
-            esp32s3)
-              TARGET="xtensa-esp32s3-espidf"
-              ;;
-            esp32s2)
-              TARGET="xtensa-esp32s2-espidf"
-              ;;
-            esp32)
-              TARGET="xtensa-esp32-espidf"
-              ;;
-            *)
-              TARGET="riscv32imac-unknown-none-elf"
-              ;;
-          esac
-          echo "target=$TARGET" >> $GITHUB_OUTPUT
-          echo "chip_target=$TARGET" >> $GITHUB_OUTPUT
-
       - name: Checkout PR code
         uses: actions/checkout@v3
         with:
           ref: ${{ github.event.issue.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Build current binary - ${{ matrix.example.name }} (${{ matrix.chip }})
-        working-directory: ./${{ matrix.example.path }}
-        env:
-          TARGET: ${{ steps.set-target.outputs.target }}
+      - name: Build and get size
+        working-directory: ./qa-test
         run: |
-          cargo build --release ${{ matrix.example.build_cmd }} --features ${{ matrix.chip }} --target ${{ env.TARGET }}
+          cargo build --release --bin sleep_timer --features esp32 --target xtensa-esp32-espidf
+          echo "=== ESP32 - Sleep Timer ==="
+          cargo size --bin sleep_timer --release --features esp32 --target xtensa-esp32-espidf
 
-      - name: Get current binary size - ${{ matrix.example.name }} (${{ matrix.chip }})
-        id: binary-size
-        working-directory: ./${{ matrix.example.path }}
-        env:
-          TARGET: ${{ steps.set-target.outputs.target }}
-        run: |
-          SIZE_OUTPUT=$(cargo size --release ${{ matrix.example.build_cmd }} --features ${{ matrix.chip }} --target ${{ env.TARGET }})
-          echo "$SIZE_OUTPUT"
-          echo "size_output<<EOF" >> $GITHUB_OUTPUT
-          echo "$SIZE_OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Save current binary - ${{ matrix.example.name }} (${{ matrix.chip }})
-        env:
-          TARGET: ${{ steps.set-target.outputs.target }}
-        run: |
-          cp ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/${{ matrix.example.name }} ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/current_${{ matrix.example.name }}_${{ matrix.chip }}.elf
-
-      - name: Checkout base commit
-        run: |
-          git checkout ${{ github.event.issue.pull_request.base.sha }}
-
-      - name: Build base binary - ${{ matrix.example.name }} (${{ matrix.chip }})
-        working-directory: ./${{ matrix.example.path }}
-        env:
-          TARGET: ${{ steps.set-target.outputs.target }}
-        run: |
-          cargo build --release ${{ matrix.example.build_cmd }} --features ${{ matrix.chip }} --target ${{ env.TARGET }}
-          mv ./target/${{ env.TARGET }}/release/${{ matrix.example.name }} ./target/${{ env.TARGET }}/release/base_${{ matrix.example.name }}_${{ matrix.chip }}.elf
-
-      - name: Run Bloaty comparison - ${{ matrix.example.name }} (${{ matrix.chip }})
-        id: bloaty-comparison
-        env:
-          TARGET: ${{ steps.set-target.outputs.target }}
-        uses: carlosperate/bloaty-action@v1
+  sleep-timer-esp32c3:
+    needs: setup-toolchain
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v3
         with:
-          bloaty-args: ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/base_${{ matrix.example.name }}_${{ matrix.chip }}.elf -- ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/current_${{ matrix.example.name }}_${{ matrix.chip }}.elf
-          output-to-summary: true
+          ref: ${{ github.event.issue.pull_request.head.sha }}
+          fetch-depth: 0
 
-      - name: Set outputs for reporting
+      - name: Build and get size
+        working-directory: ./qa-test
         run: |
-          echo "example_name=${{ matrix.example.name }}" >> $GITHUB_OUTPUT
-          echo "chip_name=${{ matrix.chip }}" >> $GITHUB_OUTPUT
-          echo "target_name=${{ steps.set-target.outputs.target }}" >> $GITHUB_OUTPUT
+          cargo build --release --bin sleep_timer --features esp32c3 --target riscv32imc-unknown-none-elf
+          echo "=== ESP32C3 - Sleep Timer ==="
+          cargo size --bin sleep_timer --release --features esp32c3 --target riscv32imc-unknown-none-elf
+
+  sleep-timer-esp32c6:
+    needs: setup-toolchain
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.issue.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Build and get size
+        working-directory: ./qa-test
+        run: |
+          cargo build --release --bin sleep_timer --features esp32c6 --target riscv32imac-unknown-none-elf
+          echo "=== ESP32C6 - Sleep Timer ==="
+          cargo size --bin sleep_timer --release --features esp32c6 --target riscv32imac-unknown-none-elf
+
+  embassy-dhcp-esp32:
+    needs: setup-toolchain
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.issue.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Build and get size
+        working-directory: ./examples/wifi/embassy_dhcp
+        run: |
+          cargo build --release --features esp32 --target xtensa-esp32-espidf
+          echo "=== ESP32 - Embassy DHCP ==="
+          cargo size --release --features esp32 --target xtensa-esp32-espidf
+
+  embassy-dhcp-esp32c3:
+    needs: setup-toolchain
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.issue.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Build and get size
+        working-directory: ./examples/wifi/embassy_dhcp
+        run: |
+          cargo build --release --features esp32c3 --target riscv32imc-unknown-none-elf
+          echo "=== ESP32C3 - Embassy DHCP ==="
+          cargo size --release --features esp32c3 --target riscv32imc-unknown-none-elf
+
+  embassy-dhcp-esp32c6:
+    needs: setup-toolchain
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.issue.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Build and get size
+        working-directory: ./examples/wifi/embassy_dhcp
+        run: |
+          cargo build --release --features esp32c6 --target riscv32imac-unknown-none-elf
+          echo "=== ESP32C6 - Embassy DHCP ==="
+          cargo size --release --features esp32c6 --target riscv32imac-unknown-none-elf
 
   report-results:
-    needs: [parse-command, analyze-binary]
-    if: ${{ needs.parse-command.outputs.should-run == 'true' }}
+    needs: [sleep-timer-esp32, sleep-timer-esp32c3, sleep-timer-esp32c6, embassy-dhcp-esp32, embassy-dhcp-esp32c3, embassy-dhcp-esp32c6]
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
-    
     steps:
-      - name: Collect results
-        id: collect
-        run: |
-          # Create a structured result object
-          RESULTS={}
-          
-          # Get all analyze-binary jobs
-          JOBS="${{ toJSON(needs.analyze-binary) }}"
-          echo "Jobs: $JOBS"
-          
-          # This is a simplified approach - in practice you'd need to parse each job's outputs
-          echo "results_collected=true" >> $GITHUB_OUTPUT
-
-      - name: Add PR comment with results
+      - name: Add PR comment
         continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
-            // Simple approach: just mention all completed combinations
-            const chips = ${{ needs.parse-command.outputs.chips }};
-            let commentBody = `## Binary Size Analysis\n\n`;
-            
-            chips.forEach(chip => {
-              commentBody += `### Chip: ${chip}\n\n`;
-              
-              // Check which examples ran for this chip
-              const examples = ['sleep_timer', 'embassy_dhcp'];
-              
-              examples.forEach(example => {
-                commentBody += `#### ${example}:\n`;
-                
-                // Try to find the job result for this chip/example combination
-                // This is simplified - you'd need more complex output mapping
-                commentBody += `*Results for ${chip} - ${example}*\n`;
-                commentBody += `*Check workflow run for detailed output*\n\n`;
-              });
-            });
-            
-            commentBody += `**Note:** Full detailed results with size differences are available in the workflow run above.`;
-            
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: commentBody
+              body: `## Binary Size Analysis ✅\n\nAll 6 builds completed successfully! Check the workflow run for detailed size outputs.`
             });
-            
