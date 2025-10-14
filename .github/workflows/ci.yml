@@ -276,7 +276,7 @@ jobs:
       #   id: new-size-advanced
       - name: Save binary
         run: |
-          mv ./qa-test/target/riscv32imac-unknown-none-elf/release/sleep-timer ./qa-test/target/riscv32imac-unknown-none-elf/release/original_basic.elf
+          mv ./qa-test/target/riscv32imac-unknown-none-elf/release/sleep_timer ./qa-test/target/riscv32imac-unknown-none-elf/release/original_basic.elf
         # mv ./examples/wifi/embassy_dhcp/target/riscv32imac-unknown-none-elf/release/embassy-dhcp ././examples/wifi/embassy_dhcp/target/riscv32imac-unknown-none-elf/release/original_advanced.elf
 
       - name: If it's a PR checkout the base commit
@@ -294,7 +294,7 @@ jobs:
         id: bloaty-comparison
         uses: carlosperate/bloaty-action@v1
         with:
-          bloaty-args: ./qa-test/target/riscv32imac-unknown-none-elf/release/original_basic.elf -- ./qa-test/target/riscv32imac-unknown-none-elf/release/sleep-timer
+          bloaty-args: ./qa-test/target/riscv32imac-unknown-none-elf/release/original_basic.elf -- ./qa-test/target/riscv32imac-unknown-none-elf/release/sleep_timer
           output-to-summary: true
       - name: Add a PR comment with the bloaty diff
         if: ${{ github.event.pull_request }}
