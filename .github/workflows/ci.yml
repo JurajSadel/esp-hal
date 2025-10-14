@@ -242,7 +242,7 @@ jobs:
         with:
           target: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf
           toolchain: stable
-          components: rust-src
+          components: rust-src, llvm-tools
       # - uses: actions/cache@v3
       #   id: cache-cargo
       #   with:
