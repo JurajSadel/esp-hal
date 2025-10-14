@@ -266,14 +266,14 @@ jobs:
           echo 'RESULT<<EOF' >> $GITHUB_OUTPUT
           cargo size  --release --features=esp32c6 --target=riscv32imac-unknown-none-elf >> $GITHUB_OUTPUT
           echo 'EOF' >> $GITHUB_OUTPUT
-        id: new-size
+        id: new-size-basic
       - name: Build new advanced binary
         working-directory: .//examples/wifi/embassy_dhcp
         run: |
           echo 'RESULT<<EOF' >> $GITHUB_OUTPUT
           cargo size  --release --features=esp32c6 --target=riscv32imac-unknown-none-elf >> $GITHUB_OUTPUT
           echo 'EOF' >> $GITHUB_OUTPUT
-        id: new-size
+        id: new-size-advanced
       - name: Save binary
         run: |
           mv ./qa-test/target/riscv32imac-unknown-none-elf/release/sleep-timer ./qa-test/target/riscv32imac-unknown-none-elf/release/original_basic.elf
@@ -306,5 +306,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## PR build size\n \`\`\`\n${{ join(steps.new-size.outputs.*, '\n') }}\n\`\`\`\n ### Diff\n\`\`\`\n${{ steps.bloaty-comparison.outputs.bloaty-output-encoded }}\`\`\`\n`
+              body: `## PR build size\n \`\`\`\n${{ join(steps.new-size-basic.outputs.*, '\n') }}\n\`\`\`\n ### Diff\n\`\`\`\n${{ steps.bloaty-comparison.outputs.bloaty-output-encoded }}\`\`\`\n`
             })
