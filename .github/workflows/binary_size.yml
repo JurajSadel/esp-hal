@@ -65,7 +65,7 @@ jobs:
             echo "should-run=false" >> $GITHUB_OUTPUT
           fi
 
-  binary-size:
+  binary_size:
     needs: parse-command
     if: ${{ needs.parse-command.outputs.should-run == 'true' }}
     runs-on: ubuntu-latest
