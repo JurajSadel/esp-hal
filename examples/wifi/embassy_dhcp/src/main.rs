@@ -35,6 +35,16 @@ use esp_radio::{
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
+#[used]
+static mut COUNTER: u32 = 42;
+
+// This would go in .bss (zero initializer)
+#[used]
+static mut BUFFER: [u8; 1024] = [0; 1024];
+
+#[used]
+static mut BUFFER1: [u8; 1024] = [0; 1024];
+
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{

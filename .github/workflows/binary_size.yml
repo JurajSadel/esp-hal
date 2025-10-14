@@ -3,17 +3,13 @@ name: Binary Size Analysis
 on:
   issue_comment:
     types: [created, edited]
-  workflow_dispatch:
 
 jobs:
   parse-command:
     if: ${{ github.event.issue.pull_request }}
     runs-on: ubuntu-latest
     outputs:
-      chip: ${{ steps.parse.outputs.chip }}
-      target: ${{ steps.parse.outputs.target }}
-      example_path: ${{ steps.parse.outputs.example_path }}
-      binary_name: ${{ steps.parse.outputs.binary_name }}
+      chips: ${{ steps.parse.outputs.chips }}
       should-run: ${{ steps.parse.outputs.should-run }}
     steps:
       - name: Parse slash command
@@ -21,89 +17,104 @@ jobs:
         run: |
           COMMENT="${{ github.event.comment.body }}"
           
-          # Check for valid commands
-          if [[ $COMMENT =~ ^/test-size ]]; then
+          if [[ "$COMMENT" =~ \/test-size ]]; then
             echo "should-run=true" >> $GITHUB_OUTPUT
             
-            # Default values
-            CHIP="esp32c6"
-            TARGET="riscv32imac-unknown-none-elf"
-            EXAMPLE_PATH="qa-test"
-            BINARY_NAME="sleep_timer"
-            
-            # Parse parameters from comment
+            # Extract all chips from comment
+            CHIPS=()
             if [[ $COMMENT =~ chip=([a-zA-Z0-9]+) ]]; then
-              CHIP="${BASH_REMATCH[1]}"
-            fi
-            
-            if [[ $COMMENT =~ target=([a-zA-Z0-9_-]+) ]]; then
-              TARGET="${BASH_REMATCH[1]}"
+              # Single chip provided
+              CHIPS=("${BASH_REMATCH[1]}")
             else
-              # Auto-detect target based on chip
-              case $CHIP in
-                esp32c6|esp32c2) TARGET="riscv32imac-unknown-none-elf" ;;
-                esp32c3) TARGET="riscv32imc-unknown-none-elf" ;;
-                esp32s3) TARGET="xtensa-esp32s3-espidf" ;;
-                esp32s2) TARGET="xtensa-esp32s2-espidf" ;;
-                esp32) TARGET="xtensa-esp32-espidf" ;;
-              esac
+              # Multiple chips provided as space-separated
+              if [[ $COMMENT =~ chip=([a-zA-Z0-9\ ]+) ]]; then
+                CHIPS_STR="${BASH_REMATCH[1]}"
+                # Convert space-separated to array
+                read -ra CHIPS <<< "$CHIPS_STR"
+              else
+                # Default chip
+                CHIPS=("esp32c6")
+              fi
             fi
             
-            if [[ $COMMENT =~ example_path=([a-zA-Z0-9_-]+) ]]; then
-              EXAMPLE_PATH="${BASH_REMATCH[1]}"
-            fi
+            # Convert array to JSON for output
+            CHIPS_JSON=$(printf '%s\n' "${CHIPS[@]}" | jq -R . | jq -s .)
+            echo "chips=$CHIPS_JSON" >> $GITHUB_OUTPUT
             
-            if [[ $COMMENT =~ binary_name=([a-zA-Z0-9_-]+) ]]; then
-              BINARY_NAME="${BASH_REMATCH[1]}"
-            fi
-            
-            echo "chip=$CHIP" >> $GITHUB_OUTPUT
-            echo "target=$TARGET" >> $GITHUB_OUTPUT
-            echo "example_path=$EXAMPLE_PATH" >> $GITHUB_OUTPUT
-            echo "binary_name=$BINARY_NAME" >> $GITHUB_OUTPUT
+            echo "Chips to test: ${CHIPS[@]}"
             
           else
             echo "should-run=false" >> $GITHUB_OUTPUT
           fi
 
-  binary_size:
+  setup-toolchain:
     needs: parse-command
+    if: ${{ needs.parse-command.outputs.should-run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install RISC-V toolchain
+        if: ${{ contains(fromJSON(needs.parse-command.outputs.chips), 'esp32c6') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32c3') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32c2') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32h2') }}
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          target: riscv32imac-unknown-none-elf,riscv32imc-unknown-none-elf
+          toolchain: stable
+          components: rust-src, llvm-tools
+
+      - name: Install Xtensa toolchain
+        if: ${{ contains(fromJSON(needs.parse-command.outputs.chips), 'esp32s3') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32s2') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32') }}
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          version: 1.90.0.0
+
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils
+
+  analyze-binary:
+    needs: [parse-command, setup-toolchain]
     if: ${{ needs.parse-command.outputs.should-run == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
       pull-requests: write
+      contents: read
+    
+    strategy:
+      matrix:
+        example: [
+          { name: 'sleep_timer', path: 'qa-test', build_cmd: '--bin sleep_timer' },
+          { name: 'embassy_dhcp', path: 'examples/wifi/embassy_dhcp', build_cmd: '' }
+        ]
+        chip: ${{ fromJSON(needs.parse-command.outputs.chips) }}
     
     env:
-      CHIP: ${{ needs.parse-command.outputs.chip }}
-      TARGET: ${{ needs.parse-command.outputs.target }}
-      EXAMPLE_PATH: ${{ needs.parse-command.outputs.example_path }}
-      BINARY_NAME: ${{ needs.parse-command.outputs.binary_name }}
+      CHIP: ${{ matrix.chip }}
     
     steps:
-      - name: Show parameters
+      - name: Set target for ${{ matrix.chip }}
+        id: set-target
         run: |
-          echo "Chip: ${{ env.CHIP }}"
-          echo "Target: ${{ env.TARGET }}"
-          echo "Example Path: ${{ env.EXAMPLE_PATH }}"
-          echo "Binary Name: ${{ env.BINARY_NAME }}"
-          echo "PR Number: ${{ github.event.issue.number }}"
-
-      # Install toolchains based on target
-      - uses: esp-rs/xtensa-toolchain@v1.6
-        if: ${{ contains(env.TARGET, 'xtensa') }}
-        with:
-          version: 1.90.0.0
-
-      - uses: dtolnay/rust-toolchain@v1
-        if: ${{ contains(env.TARGET, 'riscv') }}
-        with:
-          target: ${{ env.TARGET }}
-          toolchain: stable
-          components: rust-src, llvm-tools
-
-      - name: Install cargo-binutils
-        run: cargo install cargo-binutils
+          case "${{ matrix.chip }}" in
+            esp32c6|esp32h2) 
+              TARGET="riscv32imac-unknown-none-elf"
+              ;;
+            esp32c2|esp32c3)
+              TARGET="riscv32imc-unknown-none-elf"
+              ;;
+            esp32s3)
+              TARGET="xtensa-esp32s3-espidf"
+              ;;
+            esp32s2)
+              TARGET="xtensa-esp32s2-espidf"
+              ;;
+            esp32)
+              TARGET="xtensa-esp32-espidf"
+              ;;
+            *)
+              TARGET="riscv32imac-unknown-none-elf"
+              ;;
+          esac
+          echo "target=$TARGET" >> $GITHUB_OUTPUT
+          echo "Testing ${{ matrix.chip }} with target $TARGET"
 
       - name: Checkout PR code
         uses: actions/checkout@v3
@@ -111,55 +122,83 @@ jobs:
           ref: ${{ github.event.issue.pull_request.head.sha }}
           fetch-depth: 0
 
-      # Build current PR binary
-      - name: Build current PR binary
-        working-directory: ./${{ env.EXAMPLE_PATH }}
+      - name: Build current binary - ${{ matrix.example.name }} (${{ matrix.chip }})
+        working-directory: ./${{ matrix.example.path }}
+        env:
+          TARGET: ${{ steps.set-target.outputs.target }}
         run: |
-          cargo build --release --bin ${{ env.BINARY_NAME }} --features ${{ env.CHIP }} --target ${{ env.TARGET }}
+          cargo build --release ${{ matrix.example.build_cmd }} --features ${{ env.CHIP }} --target ${{ env.TARGET }}
 
-      - name: Get current binary size
-        id: current-size
-        working-directory: ./${{ env.EXAMPLE_PATH }}
+      - name: Get current binary size - ${{ matrix.example.name }} (${{ matrix.chip }})
+        id: binary-size
+        working-directory: ./${{ matrix.example.path }}
+        env:
+          TARGET: ${{ steps.set-target.outputs.target }}
         run: |
           echo "size_output<<EOF" >> $GITHUB_OUTPUT
-          cargo size --bin ${{ env.BINARY_NAME }} --release --features ${{ env.CHIP }} --target ${{ env.TARGET }} >> $GITHUB_OUTPUT
+          cargo size --release ${{ matrix.example.build_cmd }} --features ${{ env.CHIP }} --target ${{ env.TARGET }} >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Save current binary
+      - name: Save current binary - ${{ matrix.example.name }} (${{ matrix.chip }})
+        env:
+          TARGET: ${{ steps.set-target.outputs.target }}
         run: |
-          cp ./${{ env.EXAMPLE_PATH }}/target/${{ env.TARGET }}/release/${{ env.BINARY_NAME }} ./${{ env.EXAMPLE_PATH }}/target/${{ env.TARGET }}/release/current_${{ env.CHIP }}.elf
+          cp ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/${{ matrix.example.name }} ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/current_${{ matrix.example.name }}_${{ matrix.chip }}.elf
 
-      # Build base commit binary for comparison
       - name: Checkout base commit
         run: |
           git checkout ${{ github.event.issue.pull_request.base.sha }}
 
-      - name: Build base binary
-        working-directory: ./${{ env.EXAMPLE_PATH }}
+      - name: Build base binary - ${{ matrix.example.name }} (${{ matrix.chip }})
+        working-directory: ./${{ matrix.example.path }}
+        env:
+          TARGET: ${{ steps.set-target.outputs.target }}
         run: |
-          cargo build --release --bin ${{ env.BINARY_NAME }} --features ${{ env.CHIP }} --target ${{ env.TARGET }}
-          mv ./target/${{ env.TARGET }}/release/${{ env.BINARY_NAME }} ./target/${{ env.TARGET }}/release/base_${{ env.CHIP }}.elf
+          cargo build --release ${{ matrix.example.build_cmd }} --features ${{ env.CHIP }} --target ${{ env.TARGET }}
+          mv ./target/${{ env.TARGET }}/release/${{ matrix.example.name }} ./target/${{ env.TARGET }}/release/base_${{ matrix.example.name }}_${{ matrix.chip }}.elf
 
-      - name: Run Bloaty comparison
+      - name: Run Bloaty comparison - ${{ matrix.example.name }} (${{ matrix.chip }})
         id: bloaty-comparison
+        env:
+          TARGET: ${{ steps.set-target.outputs.target }}
         uses: carlosperate/bloaty-action@v1
         with:
-          bloaty-args: ./${{ env.EXAMPLE_PATH }}/target/${{ env.TARGET }}/release/base_${{ env.CHIP }}.elf -- ./${{ env.EXAMPLE_PATH }}/target/${{ env.TARGET }}/release/current_${{ env.CHIP }}.elf
+          bloaty-args: ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/base_${{ matrix.example.name }}_${{ matrix.chip }}.elf -- ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/current_${{ matrix.example.name }}_${{ matrix.chip }}.elf
           output-to-summary: true
 
+  report-results:
+    needs: [parse-command, analyze-binary]
+    if: ${{ needs.parse-command.outputs.should-run == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    
+    steps:
       - name: Add PR comment with results
         continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
-            const sizeOutput = `${{ steps.current-size.outputs.size_output }}`;
-            const bloatyOutput = `${{ steps.bloaty-comparison.outputs.bloaty-output-encoded }}`;
-            const chip = `${{ env.CHIP }}`;
-            const target = `${{ env.TARGET }}`;
+            const chips = ${{ needs.parse-command.outputs.chips }};
+            let commentBody = `## Binary Size Analysis\n\n`;
+            
+            chips.forEach(chip => {
+              commentBody += `### Chip: ${chip}\n\n`;
+              
+              ['sleep_timer', 'embassy_dhcp'].forEach(example => {
+                // This would need more complex output handling for matrix jobs
+                // For now, we'll use a simpler approach
+                commentBody += `**${example}:**\n`;
+                commentBody += `*Size and diff for ${chip}*\n\n`;
+              });
+            });
+            
+            // Simplified output for now - you'd need to collect from all matrix jobs
+            commentBody += `*Note: Full results available in the workflow run*\n`;
             
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Binary Size Analysis (${chip} - ${target})\n\n### Current PR Size:\n\`\`\`\n${sizeOutput}\n\`\`\`\n\n### Size Difference vs Base:\n\`\`\`\n${bloatyOutput}\n\`\`\`\n`
-            })
+              body: commentBody
+            });
