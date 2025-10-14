@@ -32,6 +32,9 @@ fn main() -> ! {
     let delay = Delay::new();
     let mut rtc = Rtc::new(peripherals.LPWR);
 
+    #[used]
+    static mut BUFFER12: [u8; 1024] = [0; 1024];
+
     println!("up and runnning!");
     let reason = reset_reason(Cpu::ProCpu).unwrap_or(SocResetReason::ChipPowerOn);
     println!("reset reason: {:?}", reason);
