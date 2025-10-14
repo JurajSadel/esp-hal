@@ -25,6 +25,9 @@ static mut COUNTER: u32 = 42;
 #[used]
 static mut BUFFER: [u8; 1024] = [0; 1024];
 
+#[used]
+static mut BUFFER1: [u8; 1024] = [0; 1024];
+
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
