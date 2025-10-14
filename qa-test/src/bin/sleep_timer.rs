@@ -20,7 +20,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[used]
 static mut COUNTER: u32 = 42;
-
+ 
 // This would go in .bss (zero initializer)
 #[used]
 static mut BUFFER: [u8; 1024] = [0; 1024];
