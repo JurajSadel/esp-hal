@@ -21,20 +21,13 @@ jobs:
             echo "should-run=true" >> $GITHUB_OUTPUT
             
             # Extract all chips from comment
-            CHIPS=()
-            if [[ $COMMENT =~ chip=([a-zA-Z0-9]+) ]]; then
-              # Single chip provided
-              CHIPS=("${BASH_REMATCH[1]}")
+            if [[ $COMMENT =~ chip=([a-zA-Z0-9\ ]+) ]]; then
+              CHIPS_STR="${BASH_REMATCH[1]}"
+              # Convert space-separated to array
+              read -ra CHIPS <<< "$CHIPS_STR"
             else
-              # Multiple chips provided as space-separated
-              if [[ $COMMENT =~ chip=([a-zA-Z0-9\ ]+) ]]; then
-                CHIPS_STR="${BASH_REMATCH[1]}"
-                # Convert space-separated to array
-                read -ra CHIPS <<< "$CHIPS_STR"
-              else
-                # Default chip
-                CHIPS=("esp32c6")
-              fi
+              # Default chip
+              CHIPS=("esp32c6")
             fi
             
             # Convert array to JSON for output
@@ -53,7 +46,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install RISC-V toolchain
-        if: ${{ contains(fromJSON(needs.parse-command.outputs.chips), 'esp32c6') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32c3') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32c2') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32h2') }}
         uses: dtolnay/rust-toolchain@v1
         with:
           target: riscv32imac-unknown-none-elf,riscv32imc-unknown-none-elf
@@ -61,7 +53,6 @@ jobs:
           components: rust-src, llvm-tools
 
       - name: Install Xtensa toolchain
-        if: ${{ contains(fromJSON(needs.parse-command.outputs.chips), 'esp32s3') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32s2') || contains(fromJSON(needs.parse-command.outputs.chips), 'esp32') }}
         uses: esp-rs/xtensa-toolchain@v1.6
         with:
           version: 1.90.0.0
@@ -86,18 +77,15 @@ jobs:
         ]
         chip: ${{ fromJSON(needs.parse-command.outputs.chips) }}
     
-    env:
-      CHIP: ${{ matrix.chip }}
-    
     steps:
       - name: Set target for ${{ matrix.chip }}
         id: set-target
         run: |
           case "${{ matrix.chip }}" in
-            esp32c6|esp32h2) 
+            esp32c6|esp32c2|esp32h2) 
               TARGET="riscv32imac-unknown-none-elf"
               ;;
-            esp32c2|esp32c3)
+            esp32c3)
               TARGET="riscv32imc-unknown-none-elf"
               ;;
             esp32s3)
@@ -114,7 +102,7 @@ jobs:
               ;;
           esac
           echo "target=$TARGET" >> $GITHUB_OUTPUT
-          echo "Testing ${{ matrix.chip }} with target $TARGET"
+          echo "chip_target=$TARGET" >> $GITHUB_OUTPUT
 
       - name: Checkout PR code
         uses: actions/checkout@v3
@@ -127,7 +115,7 @@ jobs:
         env:
           TARGET: ${{ steps.set-target.outputs.target }}
         run: |
-          cargo build --release ${{ matrix.example.build_cmd }} --features ${{ env.CHIP }} --target ${{ env.TARGET }}
+          cargo build --release ${{ matrix.example.build_cmd }} --features ${{ matrix.chip }} --target ${{ env.TARGET }}
 
       - name: Get current binary size - ${{ matrix.example.name }} (${{ matrix.chip }})
         id: binary-size
@@ -135,8 +123,10 @@ jobs:
         env:
           TARGET: ${{ steps.set-target.outputs.target }}
         run: |
+          SIZE_OUTPUT=$(cargo size --release ${{ matrix.example.build_cmd }} --features ${{ matrix.chip }} --target ${{ env.TARGET }})
+          echo "$SIZE_OUTPUT"
           echo "size_output<<EOF" >> $GITHUB_OUTPUT
-          cargo size --release ${{ matrix.example.build_cmd }} --features ${{ env.CHIP }} --target ${{ env.TARGET }} >> $GITHUB_OUTPUT
+          echo "$SIZE_OUTPUT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Save current binary - ${{ matrix.example.name }} (${{ matrix.chip }})
@@ -154,7 +144,7 @@ jobs:
         env:
           TARGET: ${{ steps.set-target.outputs.target }}
         run: |
-          cargo build --release ${{ matrix.example.build_cmd }} --features ${{ env.CHIP }} --target ${{ env.TARGET }}
+          cargo build --release ${{ matrix.example.build_cmd }} --features ${{ matrix.chip }} --target ${{ env.TARGET }}
           mv ./target/${{ env.TARGET }}/release/${{ matrix.example.name }} ./target/${{ env.TARGET }}/release/base_${{ matrix.example.name }}_${{ matrix.chip }}.elf
 
       - name: Run Bloaty comparison - ${{ matrix.example.name }} (${{ matrix.chip }})
@@ -166,6 +156,12 @@ jobs:
           bloaty-args: ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/base_${{ matrix.example.name }}_${{ matrix.chip }}.elf -- ./${{ matrix.example.path }}/target/${{ env.TARGET }}/release/current_${{ matrix.example.name }}_${{ matrix.chip }}.elf
           output-to-summary: true
 
+      - name: Set outputs for reporting
+        run: |
+          echo "example_name=${{ matrix.example.name }}" >> $GITHUB_OUTPUT
+          echo "chip_name=${{ matrix.chip }}" >> $GITHUB_OUTPUT
+          echo "target_name=${{ steps.set-target.outputs.target }}" >> $GITHUB_OUTPUT
+
   report-results:
     needs: [parse-command, analyze-binary]
     if: ${{ needs.parse-command.outputs.should-run == 'true' }}
@@ -174,27 +170,45 @@ jobs:
       pull-requests: write
     
     steps:
+      - name: Collect results
+        id: collect
+        run: |
+          # Create a structured result object
+          RESULTS={}
+          
+          # Get all analyze-binary jobs
+          JOBS="${{ toJSON(needs.analyze-binary) }}"
+          echo "Jobs: $JOBS"
+          
+          # This is a simplified approach - in practice you'd need to parse each job's outputs
+          echo "results_collected=true" >> $GITHUB_OUTPUT
+
       - name: Add PR comment with results
         continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
+            // Simple approach: just mention all completed combinations
             const chips = ${{ needs.parse-command.outputs.chips }};
             let commentBody = `## Binary Size Analysis\n\n`;
             
             chips.forEach(chip => {
               commentBody += `### Chip: ${chip}\n\n`;
               
-              ['sleep_timer', 'embassy_dhcp'].forEach(example => {
-                // This would need more complex output handling for matrix jobs
-                // For now, we'll use a simpler approach
-                commentBody += `**${example}:**\n`;
-                commentBody += `*Size and diff for ${chip}*\n\n`;
+              // Check which examples ran for this chip
+              const examples = ['sleep_timer', 'embassy_dhcp'];
+              
+              examples.forEach(example => {
+                commentBody += `#### ${example}:\n`;
+                
+                // Try to find the job result for this chip/example combination
+                // This is simplified - you'd need more complex output mapping
+                commentBody += `*Results for ${chip} - ${example}*\n`;
+                commentBody += `*Check workflow run for detailed output*\n\n`;
               });
             });
             
-            // Simplified output for now - you'd need to collect from all matrix jobs
-            commentBody += `*Note: Full results available in the workflow run*\n`;
+            commentBody += `**Note:** Full detailed results with size differences are available in the workflow run above.`;
             
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -202,3 +216,4 @@ jobs:
               repo: context.repo.repo,
               body: commentBody
             });
+            
