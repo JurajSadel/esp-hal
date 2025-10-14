@@ -3,6 +3,7 @@ name: Binary Size Analysis
 on:
   issue_comment:
     types: [created, edited]
+  workflow_dispatch:
 
 jobs:
   parse-command:
