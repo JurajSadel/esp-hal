@@ -265,7 +265,7 @@ jobs:
         working-directory: ./qa-test
         run: |
           echo 'RESULT<<EOF' >> $GITHUB_OUTPUT
-          cargo build --release --bin sleep_timer --features esp32c6 --target riscv32imac-unknown-none-elf >> $GITHUB_OUTPUT
+          cargo size --release --bin sleep_timer --features esp32c6 --target riscv32imac-unknown-none-elf >> $GITHUB_OUTPUT
           echo 'EOF' >> $GITHUB_OUTPUT
         id: new-size-basic
       # - name: Build new advanced binary
