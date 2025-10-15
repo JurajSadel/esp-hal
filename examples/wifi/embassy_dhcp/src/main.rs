@@ -45,6 +45,10 @@ macro_rules! mk_static {
     }};
 }
 
+#[cfg(feature = "esp32c6")]
+#[used]
+static mut BUFFER12: [u8; 10024] = [0; 10024];
+
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 
