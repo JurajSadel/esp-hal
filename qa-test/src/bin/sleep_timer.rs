@@ -21,6 +21,10 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[used]
 static mut BUFFER12: [u8; 10024] = [0; 10024];
 
+#[cfg(feature = "esp32c3")]
+#[used]
+static mut BUFFER12: [u8; 10024] = [0; 10024];
+
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
