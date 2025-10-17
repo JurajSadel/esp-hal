@@ -1,0 +1,185 @@
+name: Binary Size Analysis
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  binary_size:
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/test-size') }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - soc: esp32c3
+            rust-target: riscv32imc-unknown-none-elf
+            dir-qa: ./qa-test
+            dir-dhcp: ./examples/wifi/embassy_dhcp
+          - soc: esp32c6
+            rust-target: riscv32imac-unknown-none-elf
+            dir-qa: ./qa-test
+            dir-dhcp: ./examples/wifi/embassy_dhcp
+
+    steps:
+      - name: Setup Rust
+        if: ${{ !contains(fromJson('["esp32", "esp32s2", "esp32s3"]'), matrix.target.soc) }}
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          target: ${{ matrix.target.rust-target }}
+          toolchain: stable
+          components: rust-src, llvm-tools
+
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ./target/
+          key: ${{ runner.os }}-${{ matrix.target.soc }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # --- Build PR QA binary ---
+      - name: Build PR QA Binary
+        working-directory: ${{ matrix.target.dir-qa }}
+        run: |
+          cargo build --release --bin sleep_timer --features ${{ matrix.target.soc }} --target ${{ matrix.target.rust-target }}
+          cp target/${{ matrix.target.rust-target }}/release/sleep_timer target/${{ matrix.target.rust-target }}/release/pr_sleep_timer.elf
+          echo "QA_SIZE<<EOF" > result-${{ matrix.target.soc }}.txt
+          cargo size --bin sleep_timer --release --features ${{ matrix.target.soc }} --target ${{ matrix.target.rust-target }} >> result-${{ matrix.target.soc }}.txt
+          echo "EOF" >> result-${{ matrix.target.soc }}.txt
+          cargo size --bin sleep_timer --release --features ${{ matrix.target.soc }} --target ${{ matrix.target.rust-target }}
+          cat result-${{ matrix.target.soc }}.txt
+
+      # --- Checkout base commit and build base QA binary ---
+      - name: Checkout Base Commit & Build Base QA
+        run: |
+          git checkout ${{ github.event.pull_request.base.sha }}
+          cd ${{ matrix.target.dir-qa }}
+          cargo build --release --bin sleep_timer --features ${{ matrix.target.soc }} --target ${{ matrix.target.rust-target }}
+          cp target/${{ matrix.target.rust-target }}/release/sleep_timer target/${{ matrix.target.rust-target }}/release/base_sleep_timer.elf
+
+      - name: Run Bloaty QA Diff
+        id: bloaty-qa
+        uses: carlosperate/bloaty-action@v1
+        with:
+          bloaty-args: ${{ matrix.target.dir-qa }}/target/${{ matrix.target.rust-target }}/release/base_sleep_timer.elf -- ${{ matrix.target.dir-qa }}/target/${{ matrix.target.rust-target }}/release/pr_sleep_timer.elf
+          output-to-summary: false
+        continue-on-error: true
+
+      - name: Save Bloaty QA output
+        run: |
+          echo "QA_DIFF<<EOF" >> ${{ matrix.target.dir-qa }}/result-${{ matrix.target.soc }}.txt
+          echo "${{ steps.bloaty-qa.outputs.bloaty-output || 'N/A' }}" >> ${{ matrix.target.dir-qa }}/result-${{ matrix.target.soc }}.txt
+          echo "EOF" >> ${{ matrix.target.dir-qa }}/result-${{ matrix.target.soc }}.txt
+          cat ${{ matrix.target.dir-qa }}/result-${{ matrix.target.soc }}.txt
+
+      # --- Build PR DHCP binary ---
+      - name: Checkout PR SHA & Build DHCP Binary
+        run: git checkout ${{ github.event.pull_request.head.sha }}
+
+      - name: Build PR DHCP Binary
+        working-directory: ${{ matrix.target.dir-dhcp }}
+        run: |
+          cargo build --release --features ${{ matrix.target.soc }} --target ${{ matrix.target.rust-target }}
+          cp target/${{ matrix.target.rust-target }}/release/embassy-dhcp target/${{ matrix.target.rust-target }}/release/pr_dhcp.elf
+          echo "DHCP_SIZE<<EOF" >> ../../../qa-test/result-${{ matrix.target.soc }}.txt
+          cargo size --release --features ${{ matrix.target.soc }} --target ${{ matrix.target.rust-target }} >> ../../../qa-test/result-${{ matrix.target.soc }}.txt
+          echo "EOF" >> ../../../qa-test/result-${{ matrix.target.soc }}.txt
+          cat ../../../qa-test/result-${{ matrix.target.soc }}.txt
+          cargo size --release --features ${{ matrix.target.soc }} --target ${{ matrix.target.rust-target }}
+
+      # --- Checkout base commit and build base DHCP binary ---
+      - name: Checkout Base Commit & Build Base DHCP
+        run: |
+          git checkout ${{ github.event.pull_request.base.sha }}
+          cd ${{ matrix.target.dir-dhcp }}
+          cargo build --release --features ${{ matrix.target.soc }} --target ${{ matrix.target.rust-target }}
+          cp target/${{ matrix.target.rust-target }}/release/embassy-dhcp target/${{ matrix.target.rust-target }}/release/base_dhcp.elf
+
+      - name: Run Bloaty DHCP Diff
+        id: bloaty-dhcp
+        uses: carlosperate/bloaty-action@v1
+        with:
+          bloaty-args: ${{ matrix.target.dir-dhcp }}/target/${{ matrix.target.rust-target }}/release/base_dhcp.elf -- ${{ matrix.target.dir-dhcp }}/target/${{ matrix.target.rust-target }}/release/pr_dhcp.elf
+          output-to-summary: false
+        continue-on-error: true
+
+      - name: Save Bloaty DHCP output
+        run: |
+          echo "DHCP_DIFF<<EOF" >> ${{ matrix.target.dir-qa }}/result-${{ matrix.target.soc }}.txt
+          echo "${{ steps.bloaty-dhcp.outputs.bloaty-output || 'N/A' }}" >> ${{ matrix.target.dir-qa }}/result-${{ matrix.target.soc }}.txt
+          echo "EOF" >> ${{ matrix.target.dir-qa }}/result-${{ matrix.target.soc }}.txt
+
+      - name: Upload Result Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.target.soc }}
+          path: ${{ matrix.target.dir-qa }}/result-${{ matrix.target.soc }}.txt
+
+
+  report-results:
+    needs: [binary_size]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: ./results
+
+      - name: Generate Combined Report
+        id: combine
+        run: |
+          COMBINED=./results/report.txt
+          echo "PR Build Size Report" > "$COMBINED"
+          echo "====================" >> "$COMBINED"
+
+          for f in ./results/*/result-*.txt; do
+            soc=$(basename "$f" | sed 's/result-//; s/.txt//')
+            echo "" >> "$COMBINED"
+            echo "$soc" >> "$COMBINED"
+            echo "--------" >> "$COMBINED"
+
+            awk '
+            /QA_SIZE<<EOF/ {section="QA"; print section ":"; next}
+            /QA_DIFF<<EOF/ {section="QA Diff"; print section ":"; next}
+            /DHCP_SIZE<<EOF/ {section="DHCP"; print section ":"; next}
+            /DHCP_DIFF<<EOF/ {section="DHCP Diff"; print section ":"; next}
+            /EOF/ {section=""; next}
+            section {print}
+            ' "$f" >> "$COMBINED"
+          done
+
+
+
+
+      - name: Post comment to PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = './results/report.txt';
+            if (!fs.existsSync(path)) {
+              throw new Error(`File not found: ${path}`);
+            }
+            const body = fs.readFileSync(path, 'utf8');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
