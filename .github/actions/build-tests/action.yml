@@ -40,6 +40,14 @@ runs:
         default: true
         version: 1.90.0.0
 
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          . -> target
+        cache-all-targets: true
+        cache-on-failure: true
+
     - name: Build tests
       shell: bash
       run: cargo xtask build tests ${{ inputs.soc }}

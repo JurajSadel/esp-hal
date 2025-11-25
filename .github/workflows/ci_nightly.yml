@@ -37,6 +37,15 @@ jobs:
           toolchain: nightly
           components: rust-src, clippy, rustfmt
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          shared-key: "nightly-${{ matrix.device }}"
+          cache-targets: true
+          cache-on-failure: true
+
       - name: Setup cargo-batch
         run: |
           # Note this is linux-only, but the macOS runner has cargo batch installed
@@ -66,6 +75,9 @@ jobs:
       - uses: esp-rs/xtensa-toolchain@v1.6
         with:
           version: 1.90.0.0
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
       # Check all chips at once only for esp-hal
       - name: Run check-global-symbols
