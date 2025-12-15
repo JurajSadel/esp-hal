@@ -20,9 +20,9 @@ pub struct ReportArgs {
 /// Generate a combined binary size report from individual reports in the specified directory.
 pub fn generate_report(workspace: &Path, args: ReportArgs) -> Result<()> {
     let input_dir = &args.input;
-    if !input_dir.is_dir() {
-        anyhow::bail!("Expected a directory, got: {:?}", input_dir);
-    }
+    // if !input_dir.is_dir() {
+    //     anyhow::bail!("Expected a directory, got: {:?}", input_dir);
+    // }
 
     let combined_path = workspace.join("report.txt");
     let mut combined = File::create(&combined_path)
