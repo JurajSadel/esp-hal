@@ -59,6 +59,16 @@ async fn main(spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
+    unsafe {
+        core::arch::asm!(
+            "
+       .rept 1000
+         nop
+         .endr
+        nop"
+        );
+    }
+
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
     esp_alloc::heap_allocator!(size: 36 * 1024);
 

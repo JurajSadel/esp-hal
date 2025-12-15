@@ -18,16 +18,6 @@ use esp_println::println;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[used]
-static mut BUFFER12: [u8; 10024] = [0; 10024];
-
-#[cfg(feature = "esp32c3")]
-#[used]
-static mut BUFFER12: [u8; 10024] = [0; 10024];
-
-#[used]
-static LARGE_INIT_DATA: [u32; 5000] = [0xDEADBEEF; 5000];
-
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
