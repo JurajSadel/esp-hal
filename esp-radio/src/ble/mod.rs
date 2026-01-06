@@ -21,6 +21,14 @@ use esp_sync::NonReentrantMutex;
 #[non_exhaustive]
 pub struct InvalidConfigError;
 
+impl core::fmt::Display for InvalidConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "InvalidConfigError")
+    }
+}
+
+impl core::error::Error for InvalidConfigError {}
+
 #[cfg(bt_controller = "btdm")]
 use self::btdm as ble;
 #[cfg(bt_controller = "npl")]
@@ -65,7 +73,8 @@ static BT_STATE: NonReentrantMutex<BleState> = NonReentrantMutex::new(BleState {
 
 static mut HCI_OUT_COLLECTOR: MaybeUninit<HciOutCollector> = MaybeUninit::uninit();
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum HciOutType {
     Unknown,
     Acl,
@@ -130,7 +139,7 @@ impl HciOutCollector {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Represents a received BLE packet.
 #[instability::unstable]
 pub struct ReceivedPacket {

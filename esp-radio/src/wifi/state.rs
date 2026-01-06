@@ -10,7 +10,7 @@ mod private {
 
     /// Wi-Fi interface for station state.
     #[atomic_enum]
-    #[derive(PartialEq, Debug)]
+    #[derive(PartialEq, Debug, Clone, Copy, Hash)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     #[non_exhaustive]
     pub enum WifiStationState {
@@ -28,7 +28,7 @@ mod private {
 
     /// Wi-Fi interface for access point state.
     #[atomic_enum]
-    #[derive(PartialEq, Debug)]
+    #[derive(PartialEq, Debug, Clone, Copy, Hash)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     #[non_exhaustive]
     pub enum WifiAccessPointState {

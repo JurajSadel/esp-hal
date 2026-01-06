@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Information about a detected Wi-Fi access point.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub struct AccessPointInfo {
@@ -41,7 +41,7 @@ pub struct AccessPointInfo {
 }
 
 /// Configuration for a Wi-Fi access point.
-#[derive(Clone, PartialEq, Eq, BuilderLite)]
+#[derive(Clone, PartialEq, Eq, BuilderLite, Hash)]
 pub struct AccessPointConfig {
     /// The SSID of the access point.
     #[builder_lite(reference)]
