@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cfg::{
-        Value,
         clock_tree::{
             ClockTreeItem,
             ClockTreeNodeType,
@@ -24,26 +23,6 @@ use crate::{
 };
 
 pub mod clock_tree;
-
-impl super::SocProperties {
-    pub(super) fn computed_properties(&self) -> impl Iterator<Item = (&str, bool, Value)> {
-        let mut properties = vec![];
-
-        if self.xtal_options.len() > 1 {
-            // In this case, the HAL can use `for_each_soc_xtal_options` to see all available
-            // options.
-            properties.push(("soc.has_multiple_xtal_options", false, Value::Boolean(true)));
-        } else {
-            properties.push((
-                "soc.xtal_frequency",
-                false,
-                Value::Number(self.xtal_options[0]),
-            ));
-        }
-
-        properties.into_iter()
-    }
-}
 
 /// Memory region.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -303,8 +282,9 @@ impl SystemClocks {
                     ///   if possible.
                     /// - The CPU and its upstream clock nodes will be set to a default configuration.
                     /// - Other unspecified clock sources will not be useable by peripherals.
-                    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+                    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
                     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+                    #[instability::unstable]
                     pub struct ClockConfig {
                         #(#configurables)*
                     }
@@ -321,11 +301,11 @@ impl SystemClocks {
                     fn increment_reference_count(refcount: &mut u32) -> bool {
                         let first = *refcount == 0;
                         // CLOCK_BITMAP.fetch_or(!clock_id, Ordering::Relaxed);
-                        *refcount += 1;
+                        *refcount = unwrap!(refcount.checked_add(1), "Reference count overflow");
                         first
                     }
                     fn decrement_reference_count(refcount: &mut u32) -> bool {
-                        *refcount -= 1;
+                        *refcount = refcount.saturating_sub(1);
                         let last = *refcount == 0;
                         // CLOCK_BITMAP.fetch_and(!clock_id, Ordering::Relaxed);
                         last

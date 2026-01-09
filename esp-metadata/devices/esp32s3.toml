@@ -79,6 +79,7 @@ peripherals = [
     { name = "BT", virtual = true },
     { name = "CPU_CTRL", virtual = true },
     { name = "FLASH", virtual = true },
+    { name = "GPIO_DEDICATED", virtual = true },
     { name = "PSRAM", virtual = true },
     { name = "SW_INTERRUPT", virtual = true },
     { name = "ULP_RISCV_CORE", virtual = true },
@@ -114,7 +115,6 @@ symbols = [
 [device.soc]
 rc_fast_clk_default = 17_500_000
 rc_slow_clock = 136_000
-xtal_options = [40]
 
 memory_map = { ranges = [
     { name = "dram", start = 0x3FC8_8000, end = 0x3FD0_0000 },
@@ -182,7 +182,7 @@ clocks = { system_clocks = { clock_tree = [
         { name = "RC_FAST",  outputs = "RC_FAST_CLK" },
         { name = "XTAL32K",  outputs = "XTAL32K_CLK" },
         { name = "RTC_SLOW", outputs = "RTC_SLOW_CLK" },
-    ] }
+    ] },
 ] }, peripheral_clocks = { templates = [
     # templates
     { name = "clk_en_template", value = "{{control}}::regs().{{clk_en_register}}().modify(|_, w| w.{{clk_en_field}}().bit(enable));" },
@@ -206,6 +206,7 @@ clocks = { system_clocks = { clock_tree = [
     { name = "LcdCam", template_params = { reg_group = "en1" } },
     { name = "Uart2", template_params = { reg_group = "en1" } },
     { name = "UsbDevice", template_params = { reg_group = "en1" }, keep_enabled = true },
+    { name = "DedicatedGpio", template_params = { clk_en_register = "cpu_peri_clk_en", rst_register = "cpu_peri_rst_en" } },
 
     #{ name = "Adc2Arb" },
     { name = "Systimer", keep_enabled = true },
@@ -213,10 +214,14 @@ clocks = { system_clocks = { clock_tree = [
     { name = "UartMem", keep_enabled = true }, # TODO: keep_enabled can be removed once esp-println needs explicit initialization
     { name = "Usb" },
     { name = "I2s1" },
-    { name = "Mcpwm1", template_params = { peripheral = "pwm1" } },
+    { name = "Mcpwm1", template_params = { peripheral = "pwm1" }, clocks = "Mcpwm0" },
     { name = "Twai0", template_params = { peripheral = "twai" } },
     { name = "I2cExt1" },
-    { name = "Mcpwm0", template_params = { peripheral = "pwm0" } },
+    { name = "Mcpwm0", template_params = { peripheral = "pwm0" }, clocks = [
+        { name = "FUNCTION_CLOCK", type = "mux", default = "CRYPTO_PWM_CLK", variants = [
+            { name = "CRYPTO_PWM_CLK", outputs = "CRYPTO_PWM_CLK" }
+        ] }
+    ] },
     { name = "Spi3" },
     { name = "Timg1", template_params = { peripheral = "timergroup1" }, clocks = "Timg0" },
     { name = "Timg0", template_params = { peripheral = "timergroup" }, keep_enabled = true, clocks = [
@@ -371,6 +376,7 @@ input_signals = [
     { name = "I2S0I_SD1",               id = 51 },
     { name = "I2S0I_SD2",               id = 52 },
     { name = "I2S0I_SD3",               id = 53 },
+    { name = "CORE1_GPIO7",             id = 54 },
     { name = "USB_EXTPHY_VP",           id = 55 },
     { name = "USB_EXTPHY_VM",           id = 56 },
     { name = "USB_EXTPHY_RCV",          id = 57 },
@@ -408,6 +414,9 @@ input_signals = [
     { name = "SUBSPID",                 id = 121 },
     { name = "SUBSPIHD",                id = 122 },
     { name = "SUBSPIWP",                id = 123 },
+    { name = "CORE1_GPIO0",             id = 129 },
+    { name = "CORE1_GPIO1",             id = 130 },
+    { name = "CORE1_GPIO2",             id = 131 },
     { name = "CAM_DATA_0",              id = 133 },
     { name = "CAM_DATA_1",              id = 134 },
     { name = "CAM_DATA_2",              id = 135 },
@@ -478,20 +487,20 @@ input_signals = [
     { name = "SDHOST_CDATA_IN_26",      id = 219 },
     { name = "SDHOST_CDATA_IN_27",      id = 220 },
 
-    { name = "PRO_ALONEGPIO_IN0",      id = 221 },
-    { name = "PRO_ALONEGPIO_IN1",      id = 222 },
-    { name = "PRO_ALONEGPIO_IN2",      id = 223 },
-    { name = "PRO_ALONEGPIO_IN3",      id = 224 },
-    { name = "PRO_ALONEGPIO_IN4",      id = 225 },
-    { name = "PRO_ALONEGPIO_IN5",      id = 226 },
-    { name = "PRO_ALONEGPIO_IN6",      id = 227 },
-    { name = "PRO_ALONEGPIO_IN7",      id = 228 },
+    { name = "PRO_ALONEGPIO0",         id = 221 },
+    { name = "PRO_ALONEGPIO1",         id = 222 },
+    { name = "PRO_ALONEGPIO2",         id = 223 },
+    { name = "PRO_ALONEGPIO3",         id = 224 },
+    { name = "PRO_ALONEGPIO4",         id = 225 },
+    { name = "PRO_ALONEGPIO5",         id = 226 },
+    { name = "PRO_ALONEGPIO6",         id = 227 },
+    { name = "PRO_ALONEGPIO7",         id = 228 },
 
     { name = "USB_JTAG_TDO_BRIDGE",   id = 251 },
-    { name = "CORE1_GPIO_IN3",        id = 252 },
-    { name = "CORE1_GPIO_IN4",        id = 253 },
-    { name = "CORE1_GPIO_IN5",        id = 254 },
-    { name = "CORE1_GPIO_IN6",        id = 255 },
+    { name = "CORE1_GPIO3",           id = 252 },
+    { name = "CORE1_GPIO4",           id = 253 },
+    { name = "CORE1_GPIO5",           id = 254 },
+    { name = "CORE1_GPIO6",           id = 255 },
 
     { name = "SPIIO4" },
     { name = "SPIIO5" },
@@ -536,6 +545,7 @@ output_signals = [
     { name = "I2S1O_SD",                   id = 30 },
     { name = "I2S1I_BCK",                  id = 31 },
     { name = "I2S1I_WS",                   id = 32 },
+    { name = "CORE1_GPIO7",                id = 54 },
     { name = "USB_EXTPHY_OEN",             id = 55 },
     { name = "USB_EXTPHY_VPO",             id = 57 },
     { name = "USB_EXTPHY_VMO",             id = 58 },
@@ -596,6 +606,9 @@ output_signals = [
     { name = "FSPIDQS",                    id = 126 },
     { name = "SPI3_CS2",                   id = 127 },
     { name = "I2S0O_SD1",                  id = 128 },
+    { name = "CORE1_GPIO0",                id = 129 },
+    { name = "CORE1_GPIO1",                id = 130 },
+    { name = "CORE1_GPIO2",                id = 131 },
     { name = "LCD_CS",                     id = 132 },
     { name = "LCD_DATA_0",                 id = 133 },
     { name = "LCD_DATA_1",                 id = 134 },
@@ -661,20 +674,20 @@ output_signals = [
     { name = "SDHOST_CDATA_OUT_26",        id = 219 },
     { name = "SDHOST_CDATA_OUT_27",        id = 220 },
 
-    { name = "PRO_ALONEGPIO_OUT0",      id = 221 },
-    { name = "PRO_ALONEGPIO_OUT1",      id = 222 },
-    { name = "PRO_ALONEGPIO_OUT2",      id = 223 },
-    { name = "PRO_ALONEGPIO_OUT3",      id = 224 },
-    { name = "PRO_ALONEGPIO_OUT4",      id = 225 },
-    { name = "PRO_ALONEGPIO_OUT5",      id = 226 },
-    { name = "PRO_ALONEGPIO_OUT6",      id = 227 },
-    { name = "PRO_ALONEGPIO_OUT7",      id = 228 },
+    { name = "PRO_ALONEGPIO0",          id = 221 },
+    { name = "PRO_ALONEGPIO1",          id = 222 },
+    { name = "PRO_ALONEGPIO2",          id = 223 },
+    { name = "PRO_ALONEGPIO3",          id = 224 },
+    { name = "PRO_ALONEGPIO4",          id = 225 },
+    { name = "PRO_ALONEGPIO5",          id = 226 },
+    { name = "PRO_ALONEGPIO6",          id = 227 },
+    { name = "PRO_ALONEGPIO7",          id = 228 },
 
     { name = "USB_JTAG_TRST",           id = 251 },
-    { name = "CORE1_GPIO_OUT3",         id = 252 },
-    { name = "CORE1_GPIO_OUT4",         id = 253 },
-    { name = "CORE1_GPIO_OUT5",         id = 254 },
-    { name = "CORE1_GPIO_OUT6",         id = 255 },
+    { name = "CORE1_GPIO3",             id = 252 },
+    { name = "CORE1_GPIO4",             id = 253 },
+    { name = "CORE1_GPIO5",             id = 254 },
+    { name = "CORE1_GPIO6",             id = 255 },
 
     { name = "GPIO",                       id = 256 },
 
@@ -694,6 +707,14 @@ output_signals = [
 
     { name = "MTDO" },
 ]
+
+[device.dedicated_gpio]
+support_status = "partial"
+channels = [
+    ["PRO_ALONEGPIO0", "PRO_ALONEGPIO1", "PRO_ALONEGPIO2", "PRO_ALONEGPIO3", "PRO_ALONEGPIO4", "PRO_ALONEGPIO5", "PRO_ALONEGPIO6", "PRO_ALONEGPIO7"],
+    ["CORE1_GPIO0",    "CORE1_GPIO1",    "CORE1_GPIO2",    "CORE1_GPIO3",    "CORE1_GPIO4",    "CORE1_GPIO5",    "CORE1_GPIO6",    "CORE1_GPIO7"   ]
+]
+needs_initialization = true
 
 [device.i2c_master]
 support_status = "supported"
@@ -719,6 +740,8 @@ support_status = "not_supported"
 [device.interrupts]
 support_status = "partial"
 status_registers = 4
+software_interrupt_count = 4
+software_interrupt_delay = 0
 
 [device.rmt]
 support_status = "partial"
@@ -766,7 +789,6 @@ support_status = "partial"
 timg_has_timer1 = true
 timg_has_divcnt_rst = false
 instances = [{ name = "timg0" }, { name = "timg1" }]
-default_clock_source = 0 # use_xtal = false
 
 [device.uart]
 support_status = "supported"

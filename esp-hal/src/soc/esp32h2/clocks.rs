@@ -14,14 +14,13 @@
 // TODO: This is a temporary place for this, should probably be moved into clocks_ll.
 
 use crate::{
-    peripherals::{I2C_ANA_MST, LP_AON, LP_CLKRST, MODEM_LPCON, PCR, PMU, TIMG0, TIMG1},
+    peripherals::{I2C_ANA_MST, LP_CLKRST, MODEM_LPCON, PCR, PMU, TIMG0, TIMG1},
     soc::regi2c,
 };
 
 define_clock_tree_types!();
 
-// TODO: this should replace the current CpuClock enum. CpuClock is a bit of a misleading
-// name as this will configure multiple things.
+/// Clock configuration options.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[allow(
@@ -29,33 +28,52 @@ define_clock_tree_types!();
     reason = "MHz suffix indicates physical unit."
 )]
 #[non_exhaustive]
-pub(crate) enum CpuClock {
+pub enum CpuClock {
+    /// 96 MHz CPU clock
     #[default]
-    _96MHz,
-    Custom(ClockConfig),
+    _96MHz = 96,
 }
 
 impl CpuClock {
-    pub(crate) fn configure(self) {
-        // Resolve presets
-        let mut config = match self {
-            CpuClock::_96MHz => ClockConfig {
-                xtal_clk: None,
-                hp_root_clk: Some(HpRootClkConfig::Pll96),
-                cpu_clk: Some(CpuClkConfig::new(0)),
-                ahb_clk: Some(AhbClkConfig::new(0)),
-                apb_clk: Some(ApbClkConfig::new(0)),
-                lp_fast_clk: Some(LpFastClkConfig::RcFastClk),
-                lp_slow_clk: Some(LpSlowClkConfig::RcSlow),
-            },
-            CpuClock::Custom(clock_config) => clock_config,
-        };
+    const PRESET_96: ClockConfig = ClockConfig {
+        xtal_clk: None,
+        hp_root_clk: Some(HpRootClkConfig::Pll96),
+        cpu_clk: Some(CpuClkConfig::new(0)),
+        ahb_clk: Some(AhbClkConfig::new(0)),
+        apb_clk: Some(ApbClkConfig::new(0)),
+        lp_fast_clk: Some(LpFastClkConfig::RcFastClk),
+        lp_slow_clk: Some(LpSlowClkConfig::RcSlow),
+    };
+}
 
-        if config.xtal_clk.is_none() {
-            config.xtal_clk = Some(XtalClkConfig::_32);
+impl From<CpuClock> for ClockConfig {
+    fn from(value: CpuClock) -> ClockConfig {
+        match value {
+            CpuClock::_96MHz => CpuClock::PRESET_96,
+        }
+    }
+}
+
+impl Default for ClockConfig {
+    fn default() -> Self {
+        Self::from(CpuClock::default())
+    }
+}
+
+impl ClockConfig {
+    pub(crate) fn try_get_preset(self) -> Option<CpuClock> {
+        match self {
+            v if v == CpuClock::PRESET_96 => Some(CpuClock::_96MHz),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn configure(mut self) {
+        if self.xtal_clk.is_none() {
+            self.xtal_clk = Some(XtalClkConfig::_32);
         }
 
-        config.apply();
+        self.apply();
     }
 }
 
@@ -75,23 +93,8 @@ fn clk_ll_bus_update() {
 
 // XTAL_CLK
 
-fn configure_xtal_clk_impl(_clocks: &mut ClockTree, config: XtalClkConfig) {
-    // The stored configuration affects PLL settings instead. We save the value in a register
-    // similar to ESP-IDF, just in case something relies on that, or, if we can in the future read
-    // back the value instead of wasting RAM on it.
-
-    const DISABLE_ROM_LOG: u32 = 1;
-
-    let freq_mhz = config.value() / 1_000_000;
-    LP_AON::regs().store4().modify(|r, w| unsafe {
-        // The data is stored in two copies of 16-bit values. The first bit overwrites the LSB of
-        // the frequency value with DISABLE_ROM_LOG.
-
-        // Copy the DISABLE_ROM_LOG bit
-        let disable_rom_log_bit = r.bits() & DISABLE_ROM_LOG;
-        let half = (freq_mhz & (0xFFFF & !DISABLE_ROM_LOG)) | disable_rom_log_bit;
-        w.data().bits(half | (half << 16))
-    });
+fn configure_xtal_clk_impl(_clocks: &mut ClockTree, _config: XtalClkConfig) {
+    // The stored configuration affects PLL settings instead.
 }
 
 // PLL_F96M_CLK
@@ -344,6 +347,28 @@ fn configure_lp_slow_clk_impl(
     });
 }
 
+// MCPWM0_FUNCTION_CLOCK
+
+fn enable_mcpwm0_function_clock_impl(_clocks: &mut ClockTree, en: bool) {
+    PCR::regs()
+        .pwm_clk_conf()
+        .modify(|_, w| w.pwm_clkm_en().bit(en));
+}
+
+fn configure_mcpwm0_function_clock_impl(
+    _clocks: &mut ClockTree,
+    _old_selector: Option<Mcpwm0FunctionClockConfig>,
+    new_selector: Mcpwm0FunctionClockConfig,
+) {
+    PCR::regs().pwm_clk_conf().modify(|_, w| unsafe {
+        w.pwm_clkm_sel().bits(match new_selector {
+            Mcpwm0FunctionClockConfig::XtalClk => 0,
+            Mcpwm0FunctionClockConfig::RcFastClk => 1,
+            Mcpwm0FunctionClockConfig::PllF96m => 2,
+        })
+    });
+}
+
 // TIMG0_FUNCTION_CLOCK
 
 fn enable_timg0_function_clock_impl(_clocks: &mut ClockTree, en: bool) {
@@ -390,6 +415,30 @@ fn configure_timg0_calibration_clock_impl(
     });
 }
 
+// TIMG0_WDT_CLOCK
+
+fn enable_timg0_wdt_clock_impl(_clocks: &mut ClockTree, en: bool) {
+    PCR::regs()
+        .timergroup0_wdt_clk_conf()
+        .modify(|_, w| w.tg0_wdt_clk_en().bit(en));
+}
+
+fn configure_timg0_wdt_clock_impl(
+    _clocks: &mut ClockTree,
+    _old_selector: Option<Timg0WdtClockConfig>,
+    new_selector: Timg0WdtClockConfig,
+) {
+    PCR::regs()
+        .timergroup0_wdt_clk_conf()
+        .modify(|_, w| unsafe {
+            w.tg0_wdt_clk_sel().bits(match new_selector {
+                Timg0WdtClockConfig::XtalClk => 0,
+                Timg0WdtClockConfig::RcFastClk => 1,
+                Timg0WdtClockConfig::PllF48m => 2,
+            })
+        });
+}
+
 // TIMG1_FUNCTION_CLOCK
 
 fn enable_timg1_function_clock_impl(_clocks: &mut ClockTree, en: bool) {
@@ -434,4 +483,28 @@ fn configure_timg1_calibration_clock_impl(
             Timg0CalibrationClockConfig::Xtal32kClk => 2,
         })
     });
+}
+
+// TIMG1_WDT_CLOCK
+
+fn enable_timg1_wdt_clock_impl(_clocks: &mut ClockTree, en: bool) {
+    PCR::regs()
+        .timergroup1_wdt_clk_conf()
+        .modify(|_, w| w.tg1_wdt_clk_en().bit(en));
+}
+
+fn configure_timg1_wdt_clock_impl(
+    _clocks: &mut ClockTree,
+    _old_selector: Option<Timg0WdtClockConfig>,
+    new_selector: Timg0WdtClockConfig,
+) {
+    PCR::regs()
+        .timergroup1_wdt_clk_conf()
+        .modify(|_, w| unsafe {
+            w.tg1_wdt_clk_sel().bits(match new_selector {
+                Timg0WdtClockConfig::XtalClk => 0,
+                Timg0WdtClockConfig::RcFastClk => 1,
+                Timg0WdtClockConfig::PllF48m => 2,
+            })
+        });
 }

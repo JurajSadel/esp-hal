@@ -18,14 +18,14 @@ use esp_rom_sys::rom::{ets_delay_us, ets_update_cpu_frequency_rom};
 
 use crate::{
     peripherals::{I2C_ANA_MST, LPWR, SYSTEM, TIMG0},
+    rtc_cntl::Rtc,
     soc::regi2c,
     time::Rate,
 };
 
 define_clock_tree_types!();
 
-// TODO: this should replace the current CpuClock enum. CpuClock is a bit of a misleading
-// name as this will configure multiple things.
+/// Clock configuration options.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[allow(
@@ -33,55 +33,78 @@ define_clock_tree_types!();
     reason = "MHz suffix indicates physical unit."
 )]
 #[non_exhaustive]
-pub(crate) enum CpuClock {
+pub enum CpuClock {
+    /// 80 MHz CPU clock
     #[default]
-    _80MHz,
-    _120MHz,
-    Custom(ClockConfig),
+    _80MHz  = 80,
+
+    /// 120 MHz CPU clock
+    _120MHz = 120,
 }
 
 impl CpuClock {
-    pub(crate) fn configure(self) {
-        // Resolve presets
-        let mut config = match self {
-            CpuClock::_80MHz => ClockConfig {
-                xtal_clk: None,
-                system_pre_div: None,
-                cpu_pll_div: Some(CpuPllDivConfig::_6),
-                cpu_clk: Some(CpuClkConfig::Pll),
-                rc_fast_clk_div_n: Some(RcFastClkDivNConfig::new(0)),
-                rtc_slow_clk: Some(RtcSlowClkConfig::RcSlow),
-                rtc_fast_clk: Some(RtcFastClkConfig::Rc),
-                low_power_clk: Some(LowPowerClkConfig::RtcSlow),
-            },
-            CpuClock::_120MHz => ClockConfig {
-                xtal_clk: None,
-                system_pre_div: None,
-                cpu_pll_div: Some(CpuPllDivConfig::_4),
-                cpu_clk: Some(CpuClkConfig::Pll),
-                rc_fast_clk_div_n: Some(RcFastClkDivNConfig::new(0)),
-                rtc_slow_clk: Some(RtcSlowClkConfig::RcSlow),
-                rtc_fast_clk: Some(RtcFastClkConfig::Rc),
-                low_power_clk: Some(LowPowerClkConfig::RtcSlow),
-            },
-            CpuClock::Custom(clock_config) => clock_config,
-        };
+    const PRESET_80: ClockConfig = ClockConfig {
+        xtal_clk: None,
+        system_pre_div: None,
+        cpu_pll_div: Some(CpuPllDivConfig::_6),
+        cpu_clk: Some(CpuClkConfig::Pll),
+        rc_fast_clk_div_n: Some(RcFastClkDivNConfig::new(0)),
+        rtc_slow_clk: Some(RtcSlowClkConfig::RcSlow),
+        rtc_fast_clk: Some(RtcFastClkConfig::Rc),
+        low_power_clk: Some(LowPowerClkConfig::RtcSlow),
+    };
+    const PRESET_120: ClockConfig = ClockConfig {
+        xtal_clk: None,
+        system_pre_div: None,
+        cpu_pll_div: Some(CpuPllDivConfig::_4),
+        cpu_clk: Some(CpuClkConfig::Pll),
+        rc_fast_clk_div_n: Some(RcFastClkDivNConfig::new(0)),
+        rtc_slow_clk: Some(RtcSlowClkConfig::RcSlow),
+        rtc_fast_clk: Some(RtcFastClkConfig::Rc),
+        low_power_clk: Some(LowPowerClkConfig::RtcSlow),
+    };
+}
 
+impl From<CpuClock> for ClockConfig {
+    fn from(value: CpuClock) -> ClockConfig {
+        match value {
+            CpuClock::_80MHz => CpuClock::PRESET_80,
+            CpuClock::_120MHz => CpuClock::PRESET_120,
+        }
+    }
+}
+
+impl Default for ClockConfig {
+    fn default() -> Self {
+        Self::from(CpuClock::default())
+    }
+}
+
+impl ClockConfig {
+    pub(crate) fn try_get_preset(self) -> Option<CpuClock> {
+        match self {
+            v if v == CpuClock::PRESET_80 => Some(CpuClock::_80MHz),
+            v if v == CpuClock::PRESET_120 => Some(CpuClock::_120MHz),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn configure(mut self) {
         // Detect XTAL if unset.
         // FIXME: this doesn't support running from RC_FAST_CLK. We should rework detection to only
         // run when requesting XTAL.
         ClockTree::with(|clocks| {
-            if config.xtal_clk.is_none() {
+            if self.xtal_clk.is_none() {
                 // While the bootloader stores a crystal frequency in a retention register,
                 // that comes from a constant that we should not trust. If the user did not
                 // provide a crystal frequency, we should detect it.
                 let xtal = detect_xtal_freq(clocks);
                 debug!("Auto-detected XTAL frequency: {}", xtal.value());
-                config.xtal_clk = Some(xtal);
+                self.xtal_clk = Some(xtal);
             }
         });
 
-        config.apply();
+        self.apply();
     }
 }
 
@@ -162,16 +185,15 @@ fn configure_xtal_clk_impl(_clocks: &mut ClockTree, config: XtalClkConfig) {
     // similar to ESP-IDF, just in case something relies on that, or, if we can in the future read
     // back the value instead of wasting RAM on it.
 
-    const DISABLE_ROM_LOG: u32 = 1;
-
+    // Used by `rtc_clk_xtal_freq_get` patched ROM function.
     let freq_mhz = config.value() / 1_000_000;
     LPWR::regs().store4().modify(|r, w| unsafe {
         // The data is stored in two copies of 16-bit values. The first bit overwrites the LSB of
         // the frequency value with DISABLE_ROM_LOG.
 
         // Copy the DISABLE_ROM_LOG bit
-        let disable_rom_log_bit = r.bits() & DISABLE_ROM_LOG;
-        let half = (freq_mhz & (0xFFFF & !DISABLE_ROM_LOG)) | disable_rom_log_bit;
+        let disable_rom_log_bit = r.bits() & Rtc::RTC_DISABLE_ROM_LOG;
+        let half = (freq_mhz & (0xFFFF & !Rtc::RTC_DISABLE_ROM_LOG)) | disable_rom_log_bit;
         w.data().bits(half | (half << 16))
     });
 }
@@ -619,5 +641,22 @@ fn configure_timg0_calibration_clock_impl(
             Timg0CalibrationClockConfig::RcFastDivClk => 1,
             Timg0CalibrationClockConfig::Osc32kClk => 2,
         })
+    });
+}
+
+// TIMG0_WDT_CLOCK
+
+fn enable_timg0_wdt_clock_impl(_clocks: &mut ClockTree, _en: bool) {
+    // No separate clock control enable bit.
+}
+
+fn configure_timg0_wdt_clock_impl(
+    _clocks: &mut ClockTree,
+    _old_selector: Option<Timg0WdtClockConfig>,
+    new_selector: Timg0WdtClockConfig,
+) {
+    TIMG0::regs().wdtconfig0().modify(|_, w| {
+        w.wdt_use_xtal()
+            .bit(new_selector == Timg0WdtClockConfig::XtalClk)
     });
 }

@@ -54,12 +54,6 @@ macro_rules! property {
     ("soc.rc_slow_clock", str) => {
         stringify!(136000)
     };
-    ("soc.xtal_frequency") => {
-        40
-    };
-    ("soc.xtal_frequency", str) => {
-        stringify!(40)
-    };
     ("aes.dma") => {
         true
     };
@@ -116,6 +110,15 @@ macro_rules! property {
     };
     ("gpio.output_signal_max", str) => {
         stringify!(256)
+    };
+    ("dedicated_gpio.needs_initialization") => {
+        true
+    };
+    ("dedicated_gpio.channel_count") => {
+        8
+    };
+    ("dedicated_gpio.channel_count", str) => {
+        stringify!(8)
     };
     ("i2c_master.has_fsm_timeouts") => {
         true
@@ -240,12 +243,6 @@ macro_rules! property {
     ("timergroup.timg_has_divcnt_rst") => {
         false
     };
-    ("timergroup.default_clock_source") => {
-        0
-    };
-    ("timergroup.default_clock_source", str) => {
-        stringify!(0)
-    };
     ("uart.ram_size") => {
         128
     };
@@ -269,14 +266,6 @@ macro_rules! property {
     };
     ("phy.backed_up_digital_register_count", str) => {
         stringify!(21)
-    };
-}
-#[macro_export]
-#[cfg_attr(docsrs, doc(cfg(feature = "_device-selected")))]
-macro_rules! for_each_soc_xtal_options {
-    ($($pattern:tt => $code:tt;)*) => {
-        macro_rules! _for_each_inner { $(($pattern) => $code;)* ($other : tt) => {} }
-        _for_each_inner!((40)); _for_each_inner!((all(40)));
     };
 }
 #[macro_export]
@@ -466,6 +455,34 @@ macro_rules! for_each_soc_xtal_options {
 ///     _clocks: &mut ClockTree,
 ///     _old_selector: Option<LowPowerClkConfig>,
 ///     _new_selector: LowPowerClkConfig,
+/// ) {
+///     todo!()
+/// }
+///
+/// // MCPWM0_FUNCTION_CLOCK
+///
+/// fn enable_mcpwm0_function_clock_impl(_clocks: &mut ClockTree, _en: bool) {
+///     todo!()
+/// }
+///
+/// fn configure_mcpwm0_function_clock_impl(
+///     _clocks: &mut ClockTree,
+///     _old_selector: Option<Mcpwm0FunctionClockConfig>,
+///     _new_selector: Mcpwm0FunctionClockConfig,
+/// ) {
+///     todo!()
+/// }
+///
+/// // MCPWM1_FUNCTION_CLOCK
+///
+/// fn enable_mcpwm1_function_clock_impl(_clocks: &mut ClockTree, _en: bool) {
+///     todo!()
+/// }
+///
+/// fn configure_mcpwm1_function_clock_impl(
+///     _clocks: &mut ClockTree,
+///     _old_selector: Option<Mcpwm0FunctionClockConfig>,
+///     _new_selector: Mcpwm0FunctionClockConfig,
 /// ) {
 ///     todo!()
 /// }
@@ -698,6 +715,14 @@ macro_rules! define_clock_tree_types {
             /// Selects `RTC_SLOW_CLK`.
             RtcSlow,
         }
+        /// The list of clock signals that the `MCPWM0_FUNCTION_CLOCK` multiplexer can output.
+        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+        #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+        pub enum Mcpwm0FunctionClockConfig {
+            #[default]
+            /// Selects `CRYPTO_PWM_CLK`.
+            CryptoPwmClk,
+        }
         /// The list of clock signals that the `TIMG0_FUNCTION_CLOCK` multiplexer can output.
         #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -733,6 +758,8 @@ macro_rules! define_clock_tree_types {
             rtc_slow_clk: Option<RtcSlowClkConfig>,
             rtc_fast_clk: Option<RtcFastClkConfig>,
             low_power_clk: Option<LowPowerClkConfig>,
+            mcpwm0_function_clock: Option<Mcpwm0FunctionClockConfig>,
+            mcpwm1_function_clock: Option<Mcpwm0FunctionClockConfig>,
             timg0_function_clock: Option<Timg0FunctionClockConfig>,
             timg0_calibration_clock: Option<Timg0CalibrationClockConfig>,
             timg1_function_clock: Option<Timg0FunctionClockConfig>,
@@ -747,6 +774,8 @@ macro_rules! define_clock_tree_types {
             pll_d2_refcount: u32,
             rtc_fast_clk_refcount: u32,
             low_power_clk_refcount: u32,
+            mcpwm0_function_clock_refcount: u32,
+            mcpwm1_function_clock_refcount: u32,
             timg0_function_clock_refcount: u32,
             timg0_calibration_clock_refcount: u32,
             timg1_function_clock_refcount: u32,
@@ -805,6 +834,14 @@ macro_rules! define_clock_tree_types {
             pub fn low_power_clk(&self) -> Option<LowPowerClkConfig> {
                 self.low_power_clk
             }
+            /// Returns the current configuration of the MCPWM0_FUNCTION_CLOCK clock tree node
+            pub fn mcpwm0_function_clock(&self) -> Option<Mcpwm0FunctionClockConfig> {
+                self.mcpwm0_function_clock
+            }
+            /// Returns the current configuration of the MCPWM1_FUNCTION_CLOCK clock tree node
+            pub fn mcpwm1_function_clock(&self) -> Option<Mcpwm0FunctionClockConfig> {
+                self.mcpwm1_function_clock
+            }
             /// Returns the current configuration of the TIMG0_FUNCTION_CLOCK clock tree node
             pub fn timg0_function_clock(&self) -> Option<Timg0FunctionClockConfig> {
                 self.timg0_function_clock
@@ -836,6 +873,8 @@ macro_rules! define_clock_tree_types {
                 rtc_slow_clk: None,
                 rtc_fast_clk: None,
                 low_power_clk: None,
+                mcpwm0_function_clock: None,
+                mcpwm1_function_clock: None,
                 timg0_function_clock: None,
                 timg0_calibration_clock: None,
                 timg1_function_clock: None,
@@ -850,6 +889,8 @@ macro_rules! define_clock_tree_types {
                 pll_d2_refcount: 0,
                 rtc_fast_clk_refcount: 0,
                 low_power_clk_refcount: 0,
+                mcpwm0_function_clock_refcount: 0,
+                mcpwm1_function_clock_refcount: 0,
                 timg0_function_clock_refcount: 0,
                 timg0_calibration_clock_refcount: 0,
                 timg1_function_clock_refcount: 0,
@@ -1331,6 +1372,66 @@ macro_rules! define_clock_tree_types {
                 LowPowerClkConfig::RtcSlow => rtc_slow_clk_frequency(clocks),
             }
         }
+        pub fn configure_mcpwm0_function_clock(
+            clocks: &mut ClockTree,
+            new_selector: Mcpwm0FunctionClockConfig,
+        ) {
+            let old_selector = clocks.mcpwm0_function_clock.replace(new_selector);
+            if clocks.mcpwm0_function_clock_refcount > 0 {
+                request_crypto_pwm_clk(clocks);
+                configure_mcpwm0_function_clock_impl(clocks, old_selector, new_selector);
+                if let Some(old_selector) = old_selector {
+                    release_crypto_pwm_clk(clocks);
+                }
+            } else {
+                configure_mcpwm0_function_clock_impl(clocks, old_selector, new_selector);
+            }
+        }
+        pub fn request_mcpwm0_function_clock(clocks: &mut ClockTree) {
+            if increment_reference_count(&mut clocks.mcpwm0_function_clock_refcount) {
+                request_crypto_pwm_clk(clocks);
+                enable_mcpwm0_function_clock_impl(clocks, true);
+            }
+        }
+        pub fn release_mcpwm0_function_clock(clocks: &mut ClockTree) {
+            if decrement_reference_count(&mut clocks.mcpwm0_function_clock_refcount) {
+                enable_mcpwm0_function_clock_impl(clocks, false);
+                release_crypto_pwm_clk(clocks);
+            }
+        }
+        pub fn mcpwm0_function_clock_frequency(clocks: &mut ClockTree) -> u32 {
+            crypto_pwm_clk_frequency(clocks)
+        }
+        pub fn configure_mcpwm1_function_clock(
+            clocks: &mut ClockTree,
+            new_selector: Mcpwm0FunctionClockConfig,
+        ) {
+            let old_selector = clocks.mcpwm1_function_clock.replace(new_selector);
+            if clocks.mcpwm1_function_clock_refcount > 0 {
+                request_crypto_pwm_clk(clocks);
+                configure_mcpwm1_function_clock_impl(clocks, old_selector, new_selector);
+                if let Some(old_selector) = old_selector {
+                    release_crypto_pwm_clk(clocks);
+                }
+            } else {
+                configure_mcpwm1_function_clock_impl(clocks, old_selector, new_selector);
+            }
+        }
+        pub fn request_mcpwm1_function_clock(clocks: &mut ClockTree) {
+            if increment_reference_count(&mut clocks.mcpwm1_function_clock_refcount) {
+                request_crypto_pwm_clk(clocks);
+                enable_mcpwm1_function_clock_impl(clocks, true);
+            }
+        }
+        pub fn release_mcpwm1_function_clock(clocks: &mut ClockTree) {
+            if decrement_reference_count(&mut clocks.mcpwm1_function_clock_refcount) {
+                enable_mcpwm1_function_clock_impl(clocks, false);
+                release_crypto_pwm_clk(clocks);
+            }
+        }
+        pub fn mcpwm1_function_clock_frequency(clocks: &mut ClockTree) -> u32 {
+            crypto_pwm_clk_frequency(clocks)
+        }
         pub fn configure_timg0_function_clock(
             clocks: &mut ClockTree,
             new_selector: Timg0FunctionClockConfig,
@@ -1532,8 +1633,9 @@ macro_rules! define_clock_tree_types {
         ///   if possible.
         /// - The CPU and its upstream clock nodes will be set to a default configuration.
         /// - Other unspecified clock sources will not be useable by peripherals.
-        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+        #[instability::unstable]
         pub struct ClockConfig {
             /// `XTAL_CLK` configuration.
             pub xtal_clk: Option<XtalClkConfig>,
@@ -1589,11 +1691,11 @@ macro_rules! define_clock_tree_types {
         }
         fn increment_reference_count(refcount: &mut u32) -> bool {
             let first = *refcount == 0;
-            *refcount += 1;
+            *refcount = unwrap!(refcount.checked_add(1), "Reference count overflow");
             first
         }
         fn decrement_reference_count(refcount: &mut u32) -> bool {
-            *refcount -= 1;
+            *refcount = refcount.saturating_sub(1);
             let last = *refcount == 0;
             last
         }
@@ -1615,6 +1717,8 @@ macro_rules! implement_peripheral_clocks {
             Aes,
             /// APB_SAR_ADC peripheral clock signal
             ApbSarAdc,
+            /// DEDICATED_GPIO peripheral clock signal
+            DedicatedGpio,
             /// DMA peripheral clock signal
             Dma,
             /// DS peripheral clock signal
@@ -1688,6 +1792,7 @@ macro_rules! implement_peripheral_clocks {
             const ALL: &[Self] = &[
                 Self::Aes,
                 Self::ApbSarAdc,
+                Self::DedicatedGpio,
                 Self::Dma,
                 Self::Ds,
                 Self::Hmac,
@@ -1731,6 +1836,11 @@ macro_rules! implement_peripheral_clocks {
                     crate::peripherals::SYSTEM::regs()
                         .perip_clk_en0()
                         .modify(|_, w| w.apb_saradc_clk_en().bit(enable));
+                }
+                Peripheral::DedicatedGpio => {
+                    crate::peripherals::SYSTEM::regs()
+                        .cpu_peri_clk_en()
+                        .modify(|_, w| w.dedicated_gpio_clk_en().bit(enable));
                 }
                 Peripheral::Dma => {
                     crate::peripherals::SYSTEM::regs()
@@ -1895,6 +2005,11 @@ macro_rules! implement_peripheral_clocks {
                     crate::peripherals::SYSTEM::regs()
                         .perip_rst_en0()
                         .modify(|_, w| w.apb_saradc_rst().bit(reset));
+                }
+                Peripheral::DedicatedGpio => {
+                    crate::peripherals::SYSTEM::regs()
+                        .cpu_peri_rst_en()
+                        .modify(|_, w| w.dedicated_gpio_rst().bit(reset));
                 }
                 Peripheral::Dma => {
                     crate::peripherals::SYSTEM::regs()
@@ -2081,6 +2196,49 @@ macro_rules! for_each_aes_key_length {
         _for_each_inner!((128)); _for_each_inner!((256)); _for_each_inner!((128, 0, 4));
         _for_each_inner!((256, 2, 6)); _for_each_inner!((bits(128), (256)));
         _for_each_inner!((modes(128, 0, 4), (256, 2, 6)));
+    };
+}
+#[macro_export]
+#[cfg_attr(docsrs, doc(cfg(feature = "_device-selected")))]
+macro_rules! for_each_dedicated_gpio {
+    ($($pattern:tt => $code:tt;)*) => {
+        macro_rules! _for_each_inner { $(($pattern) => $code;)* ($other : tt) => {} }
+        _for_each_inner!((0)); _for_each_inner!((1)); _for_each_inner!((2));
+        _for_each_inner!((3)); _for_each_inner!((4)); _for_each_inner!((5));
+        _for_each_inner!((6)); _for_each_inner!((7)); _for_each_inner!((0, 0,
+        PRO_ALONEGPIO0)); _for_each_inner!((0, 1, PRO_ALONEGPIO1)); _for_each_inner!((0,
+        2, PRO_ALONEGPIO2)); _for_each_inner!((0, 3, PRO_ALONEGPIO3));
+        _for_each_inner!((0, 4, PRO_ALONEGPIO4)); _for_each_inner!((0, 5,
+        PRO_ALONEGPIO5)); _for_each_inner!((0, 6, PRO_ALONEGPIO6)); _for_each_inner!((0,
+        7, PRO_ALONEGPIO7)); _for_each_inner!((1, 0, CORE1_GPIO0)); _for_each_inner!((1,
+        1, CORE1_GPIO1)); _for_each_inner!((1, 2, CORE1_GPIO2)); _for_each_inner!((1, 3,
+        CORE1_GPIO3)); _for_each_inner!((1, 4, CORE1_GPIO4)); _for_each_inner!((1, 5,
+        CORE1_GPIO5)); _for_each_inner!((1, 6, CORE1_GPIO6)); _for_each_inner!((1, 7,
+        CORE1_GPIO7)); _for_each_inner!((channels(0), (1), (2), (3), (4), (5), (6),
+        (7))); _for_each_inner!((signals(0, 0, PRO_ALONEGPIO0), (0, 1, PRO_ALONEGPIO1),
+        (0, 2, PRO_ALONEGPIO2), (0, 3, PRO_ALONEGPIO3), (0, 4, PRO_ALONEGPIO4), (0, 5,
+        PRO_ALONEGPIO5), (0, 6, PRO_ALONEGPIO6), (0, 7, PRO_ALONEGPIO7), (1, 0,
+        CORE1_GPIO0), (1, 1, CORE1_GPIO1), (1, 2, CORE1_GPIO2), (1, 3, CORE1_GPIO3), (1,
+        4, CORE1_GPIO4), (1, 5, CORE1_GPIO5), (1, 6, CORE1_GPIO6), (1, 7, CORE1_GPIO7)));
+    };
+}
+#[macro_export]
+#[cfg_attr(docsrs, doc(cfg(feature = "_device-selected")))]
+macro_rules! for_each_sw_interrupt {
+    ($($pattern:tt => $code:tt;)*) => {
+        macro_rules! _for_each_inner { $(($pattern) => $code;)* ($other : tt) => {} }
+        _for_each_inner!((0, FROM_CPU_INTR0, software_interrupt0)); _for_each_inner!((1,
+        FROM_CPU_INTR1, software_interrupt1)); _for_each_inner!((2, FROM_CPU_INTR2,
+        software_interrupt2)); _for_each_inner!((3, FROM_CPU_INTR3,
+        software_interrupt3)); _for_each_inner!((all(0, FROM_CPU_INTR0,
+        software_interrupt0), (1, FROM_CPU_INTR1, software_interrupt1), (2,
+        FROM_CPU_INTR2, software_interrupt2), (3, FROM_CPU_INTR3, software_interrupt3)));
+    };
+}
+#[macro_export]
+macro_rules! sw_interrupt_delay {
+    () => {
+        unsafe {}
     };
 }
 /// This macro can be used to generate code for each channel of the RMT peripheral.
@@ -2474,6 +2632,7 @@ macro_rules! for_each_peripheral {
         peri_type ADC2 <= virtual() (unstable))); _for_each_inner!((@ peri_type BT <=
         virtual() (unstable))); _for_each_inner!((@ peri_type CPU_CTRL <= virtual()
         (unstable))); _for_each_inner!((@ peri_type FLASH <= virtual() (unstable)));
+        _for_each_inner!((@ peri_type GPIO_DEDICATED <= virtual() (unstable)));
         _for_each_inner!((@ peri_type PSRAM <= virtual() (unstable)));
         _for_each_inner!((@ peri_type SW_INTERRUPT <= virtual() (unstable)));
         _for_each_inner!((@ peri_type ULP_RISCV_CORE <= virtual() (unstable)));
@@ -2529,6 +2688,7 @@ macro_rules! for_each_peripheral {
         _for_each_inner!((DMA_CH4(unstable))); _for_each_inner!((ADC1(unstable)));
         _for_each_inner!((ADC2(unstable))); _for_each_inner!((BT(unstable)));
         _for_each_inner!((CPU_CTRL(unstable))); _for_each_inner!((FLASH(unstable)));
+        _for_each_inner!((GPIO_DEDICATED(unstable)));
         _for_each_inner!((PSRAM(unstable))); _for_each_inner!((SW_INTERRUPT(unstable)));
         _for_each_inner!((ULP_RISCV_CORE(unstable))); _for_each_inner!((WIFI(unstable)));
         _for_each_inner!((all(@ peri_type GPIO0 <= virtual()), (@ peri_type GPIO1 <=
@@ -2602,32 +2762,33 @@ macro_rules! for_each_peripheral {
         <= virtual() (unstable)), (@ peri_type ADC1 <= virtual() (unstable)), (@
         peri_type ADC2 <= virtual() (unstable)), (@ peri_type BT <= virtual()
         (unstable)), (@ peri_type CPU_CTRL <= virtual() (unstable)), (@ peri_type FLASH
-        <= virtual() (unstable)), (@ peri_type PSRAM <= virtual() (unstable)), (@
-        peri_type SW_INTERRUPT <= virtual() (unstable)), (@ peri_type ULP_RISCV_CORE <=
-        virtual() (unstable)), (@ peri_type WIFI <= virtual() (unstable))));
-        _for_each_inner!((singletons(GPIO0), (GPIO1), (GPIO2), (GPIO3), (GPIO4), (GPIO5),
-        (GPIO6), (GPIO7), (GPIO8), (GPIO9), (GPIO10), (GPIO11), (GPIO12), (GPIO13),
-        (GPIO14), (GPIO15), (GPIO16), (GPIO17), (GPIO18), (GPIO19), (GPIO20), (GPIO21),
-        (GPIO33), (GPIO34), (GPIO35), (GPIO36), (GPIO37), (GPIO38), (GPIO39), (GPIO40),
-        (GPIO41), (GPIO42), (GPIO43), (GPIO44), (GPIO45), (GPIO46), (GPIO47), (GPIO48),
-        (AES(unstable)), (APB_CTRL(unstable)), (APB_SARADC(unstable)),
-        (ASSIST_DEBUG(unstable)), (DMA(unstable)), (DS(unstable)), (EFUSE(unstable)),
-        (EXTMEM(unstable)), (GPIO(unstable)), (GPIO_SD(unstable)), (HMAC(unstable)),
-        (I2C_ANA_MST(unstable)), (I2C0), (I2C1), (I2S0(unstable)), (I2S1(unstable)),
-        (INTERRUPT_CORE0(unstable)), (INTERRUPT_CORE1(unstable)), (IO_MUX(unstable)),
-        (LCD_CAM(unstable)), (LEDC(unstable)), (LPWR(unstable)), (MCPWM0(unstable)),
-        (MCPWM1(unstable)), (PCNT(unstable)), (PERI_BACKUP(unstable)), (RMT(unstable)),
-        (RNG(unstable)), (RSA(unstable)), (RTC_CNTL(unstable)), (RTC_I2C(unstable)),
-        (RTC_IO(unstable)), (SDHOST(unstable)), (SENS(unstable)), (SENSITIVE(unstable)),
-        (SHA(unstable)), (SPI0(unstable)), (SPI1(unstable)), (SPI2), (SPI3),
-        (SYSTEM(unstable)), (SYSTIMER(unstable)), (TIMG0(unstable)), (TIMG1(unstable)),
-        (TWAI0(unstable)), (UART0), (UART1), (UART2), (UHCI0(unstable)),
-        (USB0(unstable)), (USB_DEVICE(unstable)), (USB_WRAP(unstable)), (WCL(unstable)),
+        <= virtual() (unstable)), (@ peri_type GPIO_DEDICATED <= virtual() (unstable)),
+        (@ peri_type PSRAM <= virtual() (unstable)), (@ peri_type SW_INTERRUPT <=
+        virtual() (unstable)), (@ peri_type ULP_RISCV_CORE <= virtual() (unstable)), (@
+        peri_type WIFI <= virtual() (unstable)))); _for_each_inner!((singletons(GPIO0),
+        (GPIO1), (GPIO2), (GPIO3), (GPIO4), (GPIO5), (GPIO6), (GPIO7), (GPIO8), (GPIO9),
+        (GPIO10), (GPIO11), (GPIO12), (GPIO13), (GPIO14), (GPIO15), (GPIO16), (GPIO17),
+        (GPIO18), (GPIO19), (GPIO20), (GPIO21), (GPIO33), (GPIO34), (GPIO35), (GPIO36),
+        (GPIO37), (GPIO38), (GPIO39), (GPIO40), (GPIO41), (GPIO42), (GPIO43), (GPIO44),
+        (GPIO45), (GPIO46), (GPIO47), (GPIO48), (AES(unstable)), (APB_CTRL(unstable)),
+        (APB_SARADC(unstable)), (ASSIST_DEBUG(unstable)), (DMA(unstable)),
+        (DS(unstable)), (EFUSE(unstable)), (EXTMEM(unstable)), (GPIO(unstable)),
+        (GPIO_SD(unstable)), (HMAC(unstable)), (I2C_ANA_MST(unstable)), (I2C0), (I2C1),
+        (I2S0(unstable)), (I2S1(unstable)), (INTERRUPT_CORE0(unstable)),
+        (INTERRUPT_CORE1(unstable)), (IO_MUX(unstable)), (LCD_CAM(unstable)),
+        (LEDC(unstable)), (LPWR(unstable)), (MCPWM0(unstable)), (MCPWM1(unstable)),
+        (PCNT(unstable)), (PERI_BACKUP(unstable)), (RMT(unstable)), (RNG(unstable)),
+        (RSA(unstable)), (RTC_CNTL(unstable)), (RTC_I2C(unstable)), (RTC_IO(unstable)),
+        (SDHOST(unstable)), (SENS(unstable)), (SENSITIVE(unstable)), (SHA(unstable)),
+        (SPI0(unstable)), (SPI1(unstable)), (SPI2), (SPI3), (SYSTEM(unstable)),
+        (SYSTIMER(unstable)), (TIMG0(unstable)), (TIMG1(unstable)), (TWAI0(unstable)),
+        (UART0), (UART1), (UART2), (UHCI0(unstable)), (USB0(unstable)),
+        (USB_DEVICE(unstable)), (USB_WRAP(unstable)), (WCL(unstable)),
         (XTS_AES(unstable)), (DMA_CH0(unstable)), (DMA_CH1(unstable)),
         (DMA_CH2(unstable)), (DMA_CH3(unstable)), (DMA_CH4(unstable)), (ADC1(unstable)),
         (ADC2(unstable)), (BT(unstable)), (CPU_CTRL(unstable)), (FLASH(unstable)),
-        (PSRAM(unstable)), (SW_INTERRUPT(unstable)), (ULP_RISCV_CORE(unstable)),
-        (WIFI(unstable))));
+        (GPIO_DEDICATED(unstable)), (PSRAM(unstable)), (SW_INTERRUPT(unstable)),
+        (ULP_RISCV_CORE(unstable)), (WIFI(unstable))));
     };
 }
 /// This macro can be used to generate code for each `GPIOn` instance.
@@ -3009,6 +3170,7 @@ macro_rules! define_io_mux_signals {
             I2S0I_SD1               = 51,
             I2S0I_SD2               = 52,
             I2S0I_SD3               = 53,
+            CORE1_GPIO7             = 54,
             USB_EXTPHY_VP           = 55,
             USB_EXTPHY_VM           = 56,
             USB_EXTPHY_RCV          = 57,
@@ -3046,6 +3208,9 @@ macro_rules! define_io_mux_signals {
             SUBSPID                 = 121,
             SUBSPIHD                = 122,
             SUBSPIWP                = 123,
+            CORE1_GPIO0             = 129,
+            CORE1_GPIO1             = 130,
+            CORE1_GPIO2             = 131,
             CAM_DATA_0              = 133,
             CAM_DATA_1              = 134,
             CAM_DATA_2              = 135,
@@ -3115,19 +3280,19 @@ macro_rules! define_io_mux_signals {
             SDHOST_CDATA_IN_25      = 218,
             SDHOST_CDATA_IN_26      = 219,
             SDHOST_CDATA_IN_27      = 220,
-            PRO_ALONEGPIO_IN0       = 221,
-            PRO_ALONEGPIO_IN1       = 222,
-            PRO_ALONEGPIO_IN2       = 223,
-            PRO_ALONEGPIO_IN3       = 224,
-            PRO_ALONEGPIO_IN4       = 225,
-            PRO_ALONEGPIO_IN5       = 226,
-            PRO_ALONEGPIO_IN6       = 227,
-            PRO_ALONEGPIO_IN7       = 228,
+            PRO_ALONEGPIO0          = 221,
+            PRO_ALONEGPIO1          = 222,
+            PRO_ALONEGPIO2          = 223,
+            PRO_ALONEGPIO3          = 224,
+            PRO_ALONEGPIO4          = 225,
+            PRO_ALONEGPIO5          = 226,
+            PRO_ALONEGPIO6          = 227,
+            PRO_ALONEGPIO7          = 228,
             USB_JTAG_TDO_BRIDGE     = 251,
-            CORE1_GPIO_IN3          = 252,
-            CORE1_GPIO_IN4          = 253,
-            CORE1_GPIO_IN5          = 254,
-            CORE1_GPIO_IN6          = 255,
+            CORE1_GPIO3             = 252,
+            CORE1_GPIO4             = 253,
+            CORE1_GPIO5             = 254,
+            CORE1_GPIO6             = 255,
             SPIIO4,
             SPIIO5,
             SPIIO6,
@@ -3174,6 +3339,7 @@ macro_rules! define_io_mux_signals {
             I2S1O_SD                   = 30,
             I2S1I_BCK                  = 31,
             I2S1I_WS                   = 32,
+            CORE1_GPIO7                = 54,
             USB_EXTPHY_OEN             = 55,
             USB_EXTPHY_VPO             = 57,
             USB_EXTPHY_VMO             = 58,
@@ -3234,6 +3400,9 @@ macro_rules! define_io_mux_signals {
             FSPIDQS                    = 126,
             SPI3_CS2                   = 127,
             I2S0O_SD1                  = 128,
+            CORE1_GPIO0                = 129,
+            CORE1_GPIO1                = 130,
+            CORE1_GPIO2                = 131,
             LCD_CS                     = 132,
             LCD_DATA_0                 = 133,
             LCD_DATA_1                 = 134,
@@ -3298,19 +3467,19 @@ macro_rules! define_io_mux_signals {
             SDHOST_CDATA_OUT_25        = 218,
             SDHOST_CDATA_OUT_26        = 219,
             SDHOST_CDATA_OUT_27        = 220,
-            PRO_ALONEGPIO_OUT0         = 221,
-            PRO_ALONEGPIO_OUT1         = 222,
-            PRO_ALONEGPIO_OUT2         = 223,
-            PRO_ALONEGPIO_OUT3         = 224,
-            PRO_ALONEGPIO_OUT4         = 225,
-            PRO_ALONEGPIO_OUT5         = 226,
-            PRO_ALONEGPIO_OUT6         = 227,
-            PRO_ALONEGPIO_OUT7         = 228,
+            PRO_ALONEGPIO0             = 221,
+            PRO_ALONEGPIO1             = 222,
+            PRO_ALONEGPIO2             = 223,
+            PRO_ALONEGPIO3             = 224,
+            PRO_ALONEGPIO4             = 225,
+            PRO_ALONEGPIO5             = 226,
+            PRO_ALONEGPIO6             = 227,
+            PRO_ALONEGPIO7             = 228,
             USB_JTAG_TRST              = 251,
-            CORE1_GPIO_OUT3            = 252,
-            CORE1_GPIO_OUT4            = 253,
-            CORE1_GPIO_OUT5            = 254,
-            CORE1_GPIO_OUT6            = 255,
+            CORE1_GPIO3                = 252,
+            CORE1_GPIO4                = 253,
+            CORE1_GPIO5                = 254,
+            CORE1_GPIO6                = 255,
             GPIO                       = 256,
             SPIIO4,
             SPIIO5,

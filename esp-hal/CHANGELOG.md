@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added support for `RxBreakDetected` interrupt and `wait_for_break_async` for detecting software breaks asynchronously to the UART driver (#4284)
 - Unsafely expose GPIO pins that are only available on certain chip/module variants (#4520)
 - ESP32-H2: light sleep and deep sleep support with timer and EXT1 wakeup sources (#4587, #4641)
+- Unstable detailed clock configuration options (#4660, #4674)
+- `RsaContext`, `AesContext` now derive `Clone`. (#4709)
+- `Sha<X>Context` now derive `Clone`, except on ESP32. (#4709)
+- Dedicated GPIO implementation (#4699)
 
 ### Changed
 
@@ -27,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AtomicWaker::wake` is now placed in IRAM (#4627)
 - Internal clock configuration rework (#4501, #4517, #4527, #4553, #4595, #4610, #4633)
 - RMT: Support for `Into<PulseCode>` and `From<PulseCode>` has been removed from Tx and Rx methods, respectively, in favor of requiring `PulseCode` directly. (#4616)
+- RMT: Tx handling has been revised: Some errors will now be returned by `TxTransaction::wait()` instead of `Channel::transmit`. `Channel::transmit_continuously()` can now also report `Error::EndMarkerMissing`. (#4617)
 - `Rtc::time_since_boot()` has been renamed to `Rtc::time_since_power_up()` (#4630)
 
 ### Fixed
@@ -37,10 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RMT: When dropping a Tx channel, the driver now disconnects the output pin from the peripheral. (#4302)
 - I2C: avoid potential infinite loop while checking for command completion (#4519)
 - UART: correct documentation of `read` which incorrectly stated that it would never block (#4586)
+- Fixed System Timer timestamp inaccuracy when using uncommon crystal frequencies (#4634)
+- `SystemTimer::ticks_per_second()` now correctly returns the number of ticks per second. (#4634)
+- The interrupt request set by `SoftwareInterrupt::raise()` should now take effect before returning. (#4706)
+- Fixed an issue in `ShaBackend` that resulted in incorrect hash calculation (#4722)
+- The `Peripherals` struct is now marked as `#[non_exhaustive]`. This is a breaking change. (#4729)
 
 ### Removed
 
 - The `ESP_HAL_CONFIG_XTAL_FREQUENCY` configuration option has been removed (#4517)
+- `Clocks::{i2c_clock, pwm_clock, crypto_clock}` fields (#4636, #4647)
+- `RtcClock::xtal_freq()` and the `XtalClock` enum (#4724)
 
 ## [v1.0.0] - 2025-10-30
 

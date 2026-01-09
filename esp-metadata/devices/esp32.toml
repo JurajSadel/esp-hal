@@ -102,7 +102,6 @@ symbols = [
 ref_tick_hz = 1_000_000
 rc_fast_clk_default = 8_500_000
 rc_slow_clock = 150_000
-xtal_options = [26, 40]
 
 memory_map = { ranges = [
     { name = "dram", start = 0x3FFA_E000, end = 0x4000_0000 },
@@ -235,6 +234,9 @@ clocks = { system_clocks = { clock_tree = [
     #    { name = "RC_SLOW",  outputs = "RC_SLOW_CLK" },
     #    { name = "RTC_SLOW", outputs = "RTC_SLOW_CLK" },
     #] }
+
+    # Peripheral root clocks
+    # LEDC_SCLK: The TRM is slightly confusing, there is a single mux in the peripheral selecting between APB and RTC_FAST.
 ] }, peripheral_clocks = { templates = [
     # templates
     { name = "clk_en_template", value = "{{control}}::regs().{{clk_en_register}}().modify(|_, w| w.{{clk_en_field}}().bit(enable));" },
@@ -261,10 +263,14 @@ clocks = { system_clocks = { clock_tree = [
     { name = "Uart2" },
     { name = "SpiDma" },
     { name = "I2s1" },
-    { name = "Mcpwm1", template_params = { peripheral = "pwm1" } },
+    { name = "Mcpwm1", template_params = { peripheral = "pwm1" }, clocks = "Mcpwm0" },
     { name = "Twai0", template_params = { peripheral = "twai" } },
     { name = "I2cExt1" },
-    { name = "Mcpwm0", template_params = { peripheral = "pwm0" } },
+    { name = "Mcpwm0", template_params = { peripheral = "pwm0" }, clocks = [
+        { name = "FUNCTION_CLOCK", type = "mux", default = "PLL_F160M", variants = [
+            { name = "PLL_F160M", outputs = "PLL_F160M_CLK" }
+        ] }
+    ] },
     { name = "Spi3" },
     { name = "Timg1", template_params = { peripheral = "timergroup1" }, clocks = "Timg0" }, # same clock options, but different instance
     #{ name = "Efuse" },
@@ -778,6 +784,8 @@ support_status = "not_supported"
 [device.interrupts]
 support_status = "partial"
 status_registers = 3
+software_interrupt_count = 4
+software_interrupt_delay = 0
 
 [device.rmt]
 support_status = "partial"

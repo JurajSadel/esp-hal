@@ -1,6 +1,7 @@
 pub(crate) mod aes;
 pub(crate) mod gpio;
 pub(crate) mod i2c_master;
+pub(crate) mod interrupt;
 pub(crate) mod rmt;
 pub(crate) mod rsa;
 pub(crate) mod sha;
@@ -12,6 +13,7 @@ pub(crate) mod uart;
 pub(crate) use aes::*;
 pub(crate) use gpio::*;
 pub(crate) use i2c_master::*;
+pub(crate) use interrupt::*;
 pub(crate) use rmt::*;
 pub(crate) use sha::*;
 pub(crate) use soc::*;
@@ -281,7 +283,6 @@ driver_configs![
         driver: soc,
         name: "SOC",
         hide_from_peri_table: true,
-        has_computed_properties: true,
         properties: {
             #[serde(default)]
             cpu_has_csr_pc: bool,
@@ -293,7 +294,6 @@ driver_configs![
             rc_fast_clk_default: Option<u32>,
             #[serde(default)]
             rc_slow_clock: Option<u32>,
-            xtal_options: Vec<u32>,
             #[serde(default)]
             clocks: DeviceClocks,
             memory_map: MemoryMap,
@@ -377,6 +377,16 @@ driver_configs![
             pins_and_signals: GpioPinsAndSignals,
         }
     },
+    DedicatedGpioProperties {
+        driver: dedicated_gpio,
+        name: "Dedicated GPIO",
+        properties: {
+            #[serde(default)]
+            needs_initialization: bool,
+            #[serde(flatten)]
+            channel_properties: DedicatedGpioChannels,
+        }
+    },
     HmacProperties {
         driver: hmac,
         name: "HMAC",
@@ -435,6 +445,8 @@ driver_configs![
         name: "Interrupts",
         properties: {
             status_registers: u32,
+            #[serde(flatten)]
+            software_interrupt_properties: SoftwareInterruptProperties,
         }
     },
     IoMuxProperties {
@@ -577,10 +589,6 @@ driver_configs![
             timg_has_timer1: bool,
             #[serde(default)]
             timg_has_divcnt_rst: bool,
-            #[serde(default)]
-            default_clock_source: Option<u32>,
-            #[serde(default)]
-            default_wdt_clock_source: Option<u32>,
         }
     },
     TouchProperties {

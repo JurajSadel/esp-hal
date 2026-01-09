@@ -15,7 +15,7 @@ use core::{
 use embassy_executor::{Spawner, raw::TaskStorage};
 use esp_backtrace as _;
 use esp_hal::{
-    clock::{Clock, CpuClock},
+    clock::CpuClock,
     handler,
     interrupt::software::SoftwareInterruptControl,
     time::Duration,
@@ -35,15 +35,17 @@ const TEST_MILLIS: u64 = 500;
 #[handler]
 fn timer_handler() {
     let c = unsafe { COUNTER } as u64;
-    let cpu_clock = CLOCK.hz() as u64;
-    let timer_ticks_per_second = SystemTimer::ticks_per_second();
-    let cpu_cycles_per_timer_ticks = cpu_clock / timer_ticks_per_second;
+    let cpu_clock = CLOCK as u64 * 1_000_000;
     println!("task2 count={}", unsafe { T2_COUNTER });
     println!("task3 count={}", unsafe { T3_COUNTER });
+    let total_test_cpu_cycles = cpu_clock * TEST_MILLIS / 1000;
+    // Average cycles per task execution, with a precision of 2 decimal places.
+    let centicycles = (100 * total_test_cpu_cycles) / c;
     println!(
-        "Test OK, count={}, cycles={}/100",
+        "Test OK, count={}, cycles={}.{}",
         c,
-        (100 * timer_ticks_per_second * cpu_cycles_per_timer_ticks * TEST_MILLIS / 1000) / c
+        centicycles / 100,
+        centicycles % 100
     );
     loop {}
 }
@@ -79,7 +81,7 @@ async fn task3() {
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    let config = esp_hal::Config::default().with_cpu_clock(CLOCK);
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
     Hooks::init();

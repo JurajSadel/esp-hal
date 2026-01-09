@@ -1391,7 +1391,8 @@ mod sha_tests {
             (&[u8], &mut [u8]),
         ),
     ) {
-        const BUFFER_LEN: usize = 256;
+        // Make sure this is not a multiple of the block size
+        const BUFFER_LEN: usize = 264;
 
         let mut sha1_random = [0u8; BUFFER_LEN];
         let mut sha224_random = [0u8; BUFFER_LEN];
@@ -1411,7 +1412,7 @@ mod sha_tests {
         #[cfg(any(esp32, esp32s2, esp32s3))]
         rng.read(&mut sha512_random);
 
-        for size in [1, 64, 128, 256] {
+        for size in [1, 64, 128, 256, BUFFER_LEN] {
             let mut sha1_output = [0u8; 20];
             let mut sha224_output = [0u8; 28];
             let mut sha256_output = [0u8; 32];
@@ -1663,6 +1664,30 @@ mod sha_tests {
         assert_sw_hash::<sha1::Sha1>("SHA-1", &SOURCE_DATA, &hash_result);
         assert_sw_hash::<sha1::Sha1>("SHA-1", &[], &empty_result);
         hil_test::assert_eq!(empty_result, repeated_result);
+    }
+
+    #[test]
+    #[cfg(not(esp32))]
+    fn test_clone_separates_state(_ctx: Context) {
+        use esp_hal::sha::Sha1Context;
+
+        let mut sha_backend = ShaBackend::new(unsafe { esp_hal::peripherals::SHA::steal() });
+        let _sha_driver = sha_backend.start();
+
+        let mut sha1 = Sha1Context::new();
+
+        let mut hash_result = [0; 20];
+        let mut cloned_result = [0; 20];
+
+        Sha1Context::update(&mut sha1, &SOURCE_DATA).wait_blocking();
+
+        let mut sha1_clone = sha1.clone();
+
+        Sha1Context::finalize(&mut sha1, &mut hash_result).wait_blocking();
+        Sha1Context::finalize(&mut sha1_clone, &mut cloned_result).wait_blocking();
+
+        assert_sw_hash::<sha1::Sha1>("SHA-1", &SOURCE_DATA, &hash_result);
+        hil_test::assert_eq!(hash_result, cloned_result);
     }
 
     /// A rolling test that loops between hasher for every step to test

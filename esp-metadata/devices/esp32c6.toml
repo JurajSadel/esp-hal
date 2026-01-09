@@ -90,6 +90,7 @@ peripherals = [
     { name = "ADC1", virtual = true },
     { name = "BT", virtual = true },
     { name = "FLASH", virtual = true },
+    { name = "GPIO_DEDICATED", virtual = true },
     { name = "LP_CORE", virtual = true },
     { name = "SW_INTERRUPT", virtual = true },
     { name = "TSENS", virtual = true },
@@ -132,7 +133,6 @@ cpu_has_csr_pc = true
 cpu_has_prv_mode = true
 rc_fast_clk_default = 17_500_000
 rc_slow_clock = 136_000
-xtal_options = [40]
 
 memory_map = { ranges = [
     { name = "dram", start = 0x4080_0000, end = 0x4088_0000 },
@@ -192,13 +192,6 @@ clocks = { system_clocks = { clock_tree = [
         { name = "XTAL_CLK",    outputs = "XTAL_CLK" },
     ] },
 
-    # TODO: MCPWM divider
-    { name = "MCPWM_CLK", type = "mux", variants = [
-        { name = "PLL_F160M",   outputs = "PLL_F160M" },
-        { name = "RC_FAST_CLK", outputs = "RC_FAST_CLK" },
-        { name = "XTAL_CLK",    outputs = "XTAL_CLK" },
-    ] },
-
     # LP clocks
     { name = "XTAL_D2_CLK", type = "divider", output = "XTAL_CLK / 2" },
     { name = "LP_FAST_CLK", type = "mux", variants = [
@@ -242,7 +235,11 @@ clocks = { system_clocks = { clock_tree = [
             { name = "RC_FAST_CLK",  outputs = "RC_FAST_CLK" },
             { name = "XTAL32K_CLK",  outputs = "XTAL32K_CLK" },
         ] },
-        # TODO: WDT clocks
+        { name = "WDT_CLOCK", type = "mux", default = "XTAL_CLK", variants = [
+            { name = "XTAL_CLK",    outputs = "XTAL_CLK" },
+            { name = "PLL_F80M",    outputs = "PLL_F80M" },
+            { name = "RC_FAST_CLK", outputs = "RC_FAST_CLK" },
+        ] },
     ] },
     { name = "Timg1", template_params = { clk_en_template = "{{default_clk_en_template}} {{peri_clk_template}}", conf_register = "timergroup1_conf", peripheral = "tg1", peri_clk_template = "{{control}}::regs().timergroup1_timer_clk_conf().modify(|_, w| w.tg1_timer_clk_en().bit(enable));" }, clocks = "Timg0" },
     { name = "Systimer", keep_enabled = true },
@@ -255,7 +252,14 @@ clocks = { system_clocks = { clock_tree = [
     # { name = "Intmtx" },
     { name = "Pcnt" },
     { name = "Etm" },
-    { name = "Mcpwm0", template_params = { peripheral = "pwm" } },
+    { name = "Mcpwm0", template_params = { peripheral = "pwm" }, clocks = [
+        # TODO: MCPWM divider?
+        { name = "FUNCTION_CLOCK", type = "mux", default = "PLL_F160M", variants = [
+            { name = "PLL_F160M",   outputs = "PLL_F160M" },
+            { name = "RC_FAST_CLK", outputs = "RC_FAST_CLK" },
+            { name = "XTAL_CLK",    outputs = "XTAL_CLK" },
+        ] },
+    ] },
     { name = "ParlIo", template_params = { clk_en_field = "parl_clk_en", rst_field = "parl_rst_en" } },
     { name = "SdioSlave" },
     { name = "Dma", template_params = { peripheral = "gdma" } },
@@ -360,14 +364,14 @@ input_signals = [
     { name = "CPU_TESTBUS5",        id = 25 },
     { name = "CPU_TESTBUS6",        id = 26 },
     { name = "CPU_TESTBUS7",        id = 27 },
-    { name = "CPU_GPIO_IN0",        id = 28 },
-    { name = "CPU_GPIO_IN1",        id = 29 },
-    { name = "CPU_GPIO_IN2",        id = 30 },
-    { name = "CPU_GPIO_IN3",        id = 31 },
-    { name = "CPU_GPIO_IN4",        id = 32 },
-    { name = "CPU_GPIO_IN5",        id = 33 },
-    { name = "CPU_GPIO_IN6",        id = 34 },
-    { name = "CPU_GPIO_IN7",        id = 35 },
+    { name = "CPU_GPIO_0",          id = 28 },
+    { name = "CPU_GPIO_1",          id = 29 },
+    { name = "CPU_GPIO_2",          id = 30 },
+    { name = "CPU_GPIO_3",          id = 31 },
+    { name = "CPU_GPIO_4",          id = 32 },
+    { name = "CPU_GPIO_5",          id = 33 },
+    { name = "CPU_GPIO_6",          id = 34 },
+    { name = "CPU_GPIO_7",          id = 35 },
     { name = "USB_JTAG_TMS",        id = 37 },
     { name = "USB_EXTPHY_OEN",      id = 40 },
     { name = "USB_EXTPHY_VM",       id = 41 },
@@ -475,14 +479,14 @@ output_signals = [
     { name = "CPU_TESTBUS5",          id = 25 },
     { name = "CPU_TESTBUS6",          id = 26 },
     { name = "CPU_TESTBUS7",          id = 27 },
-    { name = "CPU_GPIO_OUT0",         id = 28 },
-    { name = "CPU_GPIO_OUT1",         id = 29 },
-    { name = "CPU_GPIO_OUT2",         id = 30 },
-    { name = "CPU_GPIO_OUT3",         id = 31 },
-    { name = "CPU_GPIO_OUT4",         id = 32 },
-    { name = "CPU_GPIO_OUT5",         id = 33 },
-    { name = "CPU_GPIO_OUT6",         id = 34 },
-    { name = "CPU_GPIO_OUT7",         id = 35 },
+    { name = "CPU_GPIO_0",            id = 28 },
+    { name = "CPU_GPIO_1",            id = 29 },
+    { name = "CPU_GPIO_2",            id = 30 },
+    { name = "CPU_GPIO_3",            id = 31 },
+    { name = "CPU_GPIO_4",            id = 32 },
+    { name = "CPU_GPIO_5",            id = 33 },
+    { name = "CPU_GPIO_6",            id = 34 },
+    { name = "CPU_GPIO_7",            id = 35 },
     { name = "USB_JTAG_TCK",          id = 36 },
     { name = "USB_JTAG_TMS",          id = 37 },
     { name = "USB_JTAG_TDI",          id = 38 },
@@ -568,6 +572,10 @@ output_signals = [
     { name = "MTDO" },
 ]
 
+[device.dedicated_gpio]
+support_status = "partial"
+channels = [["CPU_GPIO_0", "CPU_GPIO_1", "CPU_GPIO_2", "CPU_GPIO_3", "CPU_GPIO_4", "CPU_GPIO_5", "CPU_GPIO_6", "CPU_GPIO_7"]]
+
 [device.i2c_master]
 support_status = "supported"
 instances = [
@@ -596,6 +604,8 @@ support_status = "not_supported"
 [device.interrupts]
 support_status = "partial"
 status_registers = 3
+software_interrupt_count = 4
+software_interrupt_delay = 14 # CPU-speed sensitive - what's clocked from where?
 
 [device.rmt]
 support_status = "partial"
@@ -638,8 +648,6 @@ instances = [
 support_status = "partial"
 instances = [{ name = "timg0" }, { name = "timg1" }]
 timg_has_divcnt_rst = true
-default_clock_source = 1
-default_wdt_clock_source = 1
 
 [device.uart]
 support_status = "supported"

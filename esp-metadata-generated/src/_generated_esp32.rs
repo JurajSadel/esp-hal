@@ -60,9 +60,6 @@ macro_rules! property {
     ("soc.rc_slow_clock", str) => {
         stringify!(150000)
     };
-    ("soc.has_multiple_xtal_options") => {
-        true
-    };
     ("aes.dma") => {
         false
     };
@@ -260,15 +257,6 @@ macro_rules! property {
     };
     ("phy.combo_module") => {
         true
-    };
-}
-#[macro_export]
-#[cfg_attr(docsrs, doc(cfg(feature = "_device-selected")))]
-macro_rules! for_each_soc_xtal_options {
-    ($($pattern:tt => $code:tt;)*) => {
-        macro_rules! _for_each_inner { $(($pattern) => $code;)* ($other : tt) => {} }
-        _for_each_inner!((26)); _for_each_inner!((40)); _for_each_inner!((all(26),
-        (40)));
     };
 }
 #[macro_export]
@@ -498,6 +486,34 @@ macro_rules! for_each_soc_xtal_options {
 ///     _clocks: &mut ClockTree,
 ///     _old_selector: Option<RtcFastClkConfig>,
 ///     _new_selector: RtcFastClkConfig,
+/// ) {
+///     todo!()
+/// }
+///
+/// // MCPWM0_FUNCTION_CLOCK
+///
+/// fn enable_mcpwm0_function_clock_impl(_clocks: &mut ClockTree, _en: bool) {
+///     todo!()
+/// }
+///
+/// fn configure_mcpwm0_function_clock_impl(
+///     _clocks: &mut ClockTree,
+///     _old_selector: Option<Mcpwm0FunctionClockConfig>,
+///     _new_selector: Mcpwm0FunctionClockConfig,
+/// ) {
+///     todo!()
+/// }
+///
+/// // MCPWM1_FUNCTION_CLOCK
+///
+/// fn enable_mcpwm1_function_clock_impl(_clocks: &mut ClockTree, _en: bool) {
+///     todo!()
+/// }
+///
+/// fn configure_mcpwm1_function_clock_impl(
+///     _clocks: &mut ClockTree,
+///     _old_selector: Option<Mcpwm0FunctionClockConfig>,
+///     _new_selector: Mcpwm0FunctionClockConfig,
 /// ) {
 ///     todo!()
 /// }
@@ -812,6 +828,14 @@ macro_rules! define_clock_tree_types {
             /// Selects `RC_FAST_CLK`.
             Rc,
         }
+        /// The list of clock signals that the `MCPWM0_FUNCTION_CLOCK` multiplexer can output.
+        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+        #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+        pub enum Mcpwm0FunctionClockConfig {
+            #[default]
+            /// Selects `PLL_F160M_CLK`.
+            PllF160m,
+        }
         /// The list of clock signals that the `TIMG0_CALIBRATION_CLOCK` multiplexer can output.
         #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -842,6 +866,8 @@ macro_rules! define_clock_tree_types {
             cpu_clk: Option<CpuClkConfig>,
             rtc_slow_clk: Option<RtcSlowClkConfig>,
             rtc_fast_clk: Option<RtcFastClkConfig>,
+            mcpwm0_function_clock: Option<Mcpwm0FunctionClockConfig>,
+            mcpwm1_function_clock: Option<Mcpwm0FunctionClockConfig>,
             timg0_calibration_clock: Option<Timg0CalibrationClockConfig>,
             timg1_calibration_clock: Option<Timg0CalibrationClockConfig>,
             pll_clk_refcount: u32,
@@ -854,6 +880,8 @@ macro_rules! define_clock_tree_types {
             rc_fast_div_clk_refcount: u32,
             rtc_slow_clk_refcount: u32,
             rtc_fast_clk_refcount: u32,
+            mcpwm0_function_clock_refcount: u32,
+            mcpwm1_function_clock_refcount: u32,
             timg0_calibration_clock_refcount: u32,
             timg1_calibration_clock_refcount: u32,
         }
@@ -926,6 +954,14 @@ macro_rules! define_clock_tree_types {
             pub fn rtc_fast_clk(&self) -> Option<RtcFastClkConfig> {
                 self.rtc_fast_clk
             }
+            /// Returns the current configuration of the MCPWM0_FUNCTION_CLOCK clock tree node
+            pub fn mcpwm0_function_clock(&self) -> Option<Mcpwm0FunctionClockConfig> {
+                self.mcpwm0_function_clock
+            }
+            /// Returns the current configuration of the MCPWM1_FUNCTION_CLOCK clock tree node
+            pub fn mcpwm1_function_clock(&self) -> Option<Mcpwm0FunctionClockConfig> {
+                self.mcpwm1_function_clock
+            }
             /// Returns the current configuration of the TIMG0_CALIBRATION_CLOCK clock tree node
             pub fn timg0_calibration_clock(&self) -> Option<Timg0CalibrationClockConfig> {
                 self.timg0_calibration_clock
@@ -953,6 +989,8 @@ macro_rules! define_clock_tree_types {
                 cpu_clk: None,
                 rtc_slow_clk: None,
                 rtc_fast_clk: None,
+                mcpwm0_function_clock: None,
+                mcpwm1_function_clock: None,
                 timg0_calibration_clock: None,
                 timg1_calibration_clock: None,
                 pll_clk_refcount: 0,
@@ -965,6 +1003,8 @@ macro_rules! define_clock_tree_types {
                 rc_fast_div_clk_refcount: 0,
                 rtc_slow_clk_refcount: 0,
                 rtc_fast_clk_refcount: 0,
+                mcpwm0_function_clock_refcount: 0,
+                mcpwm1_function_clock_refcount: 0,
                 timg0_calibration_clock_refcount: 0,
                 timg1_calibration_clock_refcount: 0,
             });
@@ -1530,6 +1570,66 @@ macro_rules! define_clock_tree_types {
                 RtcFastClkConfig::Rc => rc_fast_clk_frequency(clocks),
             }
         }
+        pub fn configure_mcpwm0_function_clock(
+            clocks: &mut ClockTree,
+            new_selector: Mcpwm0FunctionClockConfig,
+        ) {
+            let old_selector = clocks.mcpwm0_function_clock.replace(new_selector);
+            if clocks.mcpwm0_function_clock_refcount > 0 {
+                request_pll_f160m_clk(clocks);
+                configure_mcpwm0_function_clock_impl(clocks, old_selector, new_selector);
+                if let Some(old_selector) = old_selector {
+                    release_pll_f160m_clk(clocks);
+                }
+            } else {
+                configure_mcpwm0_function_clock_impl(clocks, old_selector, new_selector);
+            }
+        }
+        pub fn request_mcpwm0_function_clock(clocks: &mut ClockTree) {
+            if increment_reference_count(&mut clocks.mcpwm0_function_clock_refcount) {
+                request_pll_f160m_clk(clocks);
+                enable_mcpwm0_function_clock_impl(clocks, true);
+            }
+        }
+        pub fn release_mcpwm0_function_clock(clocks: &mut ClockTree) {
+            if decrement_reference_count(&mut clocks.mcpwm0_function_clock_refcount) {
+                enable_mcpwm0_function_clock_impl(clocks, false);
+                release_pll_f160m_clk(clocks);
+            }
+        }
+        pub fn mcpwm0_function_clock_frequency(clocks: &mut ClockTree) -> u32 {
+            pll_f160m_clk_frequency(clocks)
+        }
+        pub fn configure_mcpwm1_function_clock(
+            clocks: &mut ClockTree,
+            new_selector: Mcpwm0FunctionClockConfig,
+        ) {
+            let old_selector = clocks.mcpwm1_function_clock.replace(new_selector);
+            if clocks.mcpwm1_function_clock_refcount > 0 {
+                request_pll_f160m_clk(clocks);
+                configure_mcpwm1_function_clock_impl(clocks, old_selector, new_selector);
+                if let Some(old_selector) = old_selector {
+                    release_pll_f160m_clk(clocks);
+                }
+            } else {
+                configure_mcpwm1_function_clock_impl(clocks, old_selector, new_selector);
+            }
+        }
+        pub fn request_mcpwm1_function_clock(clocks: &mut ClockTree) {
+            if increment_reference_count(&mut clocks.mcpwm1_function_clock_refcount) {
+                request_pll_f160m_clk(clocks);
+                enable_mcpwm1_function_clock_impl(clocks, true);
+            }
+        }
+        pub fn release_mcpwm1_function_clock(clocks: &mut ClockTree) {
+            if decrement_reference_count(&mut clocks.mcpwm1_function_clock_refcount) {
+                enable_mcpwm1_function_clock_impl(clocks, false);
+                release_pll_f160m_clk(clocks);
+            }
+        }
+        pub fn mcpwm1_function_clock_frequency(clocks: &mut ClockTree) -> u32 {
+            pll_f160m_clk_frequency(clocks)
+        }
         pub fn configure_timg0_calibration_clock(
             clocks: &mut ClockTree,
             new_selector: Timg0CalibrationClockConfig,
@@ -1641,8 +1741,9 @@ macro_rules! define_clock_tree_types {
         ///   if possible.
         /// - The CPU and its upstream clock nodes will be set to a default configuration.
         /// - Other unspecified clock sources will not be useable by peripherals.
-        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+        #[instability::unstable]
         pub struct ClockConfig {
             /// `XTAL_CLK` configuration.
             pub xtal_clk: Option<XtalClkConfig>,
@@ -1693,11 +1794,11 @@ macro_rules! define_clock_tree_types {
         }
         fn increment_reference_count(refcount: &mut u32) -> bool {
             let first = *refcount == 0;
-            *refcount += 1;
+            *refcount = unwrap!(refcount.checked_add(1), "Reference count overflow");
             first
         }
         fn decrement_reference_count(refcount: &mut u32) -> bool {
-            *refcount -= 1;
+            *refcount = refcount.saturating_sub(1);
             let last = *refcount == 0;
             last
         }
@@ -2076,6 +2177,25 @@ macro_rules! for_each_aes_key_length {
         _for_each_inner!((128, 0, 4)); _for_each_inner!((192, 1, 5));
         _for_each_inner!((256, 2, 6)); _for_each_inner!((bits(128), (192), (256)));
         _for_each_inner!((modes(128, 0, 4), (192, 1, 5), (256, 2, 6)));
+    };
+}
+#[macro_export]
+#[cfg_attr(docsrs, doc(cfg(feature = "_device-selected")))]
+macro_rules! for_each_sw_interrupt {
+    ($($pattern:tt => $code:tt;)*) => {
+        macro_rules! _for_each_inner { $(($pattern) => $code;)* ($other : tt) => {} }
+        _for_each_inner!((0, FROM_CPU_INTR0, software_interrupt0)); _for_each_inner!((1,
+        FROM_CPU_INTR1, software_interrupt1)); _for_each_inner!((2, FROM_CPU_INTR2,
+        software_interrupt2)); _for_each_inner!((3, FROM_CPU_INTR3,
+        software_interrupt3)); _for_each_inner!((all(0, FROM_CPU_INTR0,
+        software_interrupt0), (1, FROM_CPU_INTR1, software_interrupt1), (2,
+        FROM_CPU_INTR2, software_interrupt2), (3, FROM_CPU_INTR3, software_interrupt3)));
+    };
+}
+#[macro_export]
+macro_rules! sw_interrupt_delay {
+    () => {
+        unsafe {}
     };
 }
 /// This macro can be used to generate code for each channel of the RMT peripheral.

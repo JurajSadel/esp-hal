@@ -47,6 +47,7 @@ peripherals = [
     { name = "ADC1", virtual = true },
     { name = "BT", virtual = true },
     { name = "FLASH", virtual = true },
+    { name = "GPIO_DEDICATED", virtual = true },
     { name = "SW_INTERRUPT", virtual = true },
     { name = "WIFI", virtual = true },
     { name = "MEM2MEM1", virtual = true },
@@ -81,7 +82,6 @@ symbols = [
 cpu_has_csr_pc = true
 rc_fast_clk_default = 17_500_000
 rc_slow_clock = 136_000
-xtal_options = [26, 40]
 
 memory_map = { ranges = [
     { name = "dram", start = 0x3FCA_0000, end = 0x3FCE_0000 },
@@ -186,6 +186,10 @@ clocks = { system_clocks = { clock_tree = [
             { name = "RC_SLOW_CLK",     outputs = "RC_SLOW_CLK" },
             { name = "RC_FAST_DIV_CLK", outputs = "RC_FAST_DIV_CLK" },
             { name = "OSC32K_CLK",     outputs = "OSC_SLOW_CLK" },
+        ] },
+        { name = "WDT_CLOCK", type = "mux", default = "PLL_40M", variants = [
+            { name = "PLL_40M",  outputs = "PLL_40M" },
+            { name = "XTAL_CLK", outputs = "XTAL_CLK" },
         ] },
     ] },
     { name = "Ledc" },
@@ -343,6 +347,10 @@ output_signals = [
     { name = "MTDO" },
 ]
 
+[device.dedicated_gpio]
+support_status = "partial"
+channels = [["CPU_GPIO_0", "CPU_GPIO_1", "CPU_GPIO_2", "CPU_GPIO_3", "CPU_GPIO_4", "CPU_GPIO_5", "CPU_GPIO_6", "CPU_GPIO_7"]]
+
 [device.i2c_master]
 support_status = "supported"
 instances = [
@@ -362,6 +370,8 @@ bus_timeout_is_exponential = true
 [device.interrupts]
 support_status = "partial"
 status_registers = 2
+software_interrupt_count = 4
+software_interrupt_delay = 5
 
 [device.sha]
 support_status = "partial"
@@ -384,8 +394,6 @@ instances = [
 support_status = "partial"
 instances = [{ name = "timg0" }]
 timg_has_divcnt_rst = true
-default_clock_source = 0 # use_xtal = false
-default_wdt_clock_source = 0 # use_wdt_xtal = false
 
 [device.uart]
 support_status = "supported"
