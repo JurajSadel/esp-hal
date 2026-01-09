@@ -6,7 +6,7 @@ use core::fmt;
 use enumset::EnumSet;
 use procmacros::BuilderLite;
 
-use super::{AuthMethod, AuthMethodExt as _, Country, Protocol, SecondaryChannel};
+use super::{AuthMethod, Country, Protocol, SecondaryChannel};
 use crate::{
     WifiError,
     sys::include::{
