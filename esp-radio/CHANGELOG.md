@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `CsiConfig` struct has been moved to the `wifi::csi` module (#4588)
 - The `ScanMethod`, `ScanTypeConfig`, and `ScanConfig` types have been moved to `wifi::scan` (#4588)
 - `esp-alloc` dependency no longer enables default features (#4721)
+- `RxControlInfo` is unstable, `RxControlInfo::from_raw()` is no longer public (#4811)
+- `event`, `sniffer`, and `csi` modules are marked unstable (#4811)
 
 ### Fixed
 
