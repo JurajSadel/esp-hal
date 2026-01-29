@@ -1,0 +1,35 @@
+name: Get Labels
+
+on:
+  workflow_call:
+    outputs:
+      labels:
+        description: "List of all labels"
+        value: ${{ jobs.get-labels.outputs.labels }}
+
+jobs:
+  get-labels:
+    runs-on: ubuntu-latest
+    outputs:
+      labels: ${{ steps.list.outputs.labels }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: List labels
+        id: list
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # Get labels from native context
+            LABELS="${{ join(github.event.pull_request.labels.*.name, ' ') }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            COMMIT_MSG=$(git log -1 --pretty=%B)
+            PR_NUMBER=$(echo "$COMMIT_MSG" | grep -o "#[0-9]*" | grep -o "[0-9]*" || true)
+            if [ -n "$PR_NUMBER" ]; then
+              LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | tr '\n' ' ')
+            fi
+          fi
+
+          echo "labels=$LABELS" >> "$GITHUB_OUTPUT"
+          echo "Detected labels: $LABELS"
