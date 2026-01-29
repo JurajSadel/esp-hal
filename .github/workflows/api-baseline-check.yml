@@ -23,7 +23,7 @@ jobs:
   baseline-check:
     needs: get-labels
     if: |
-      !contains(needs.get-labels.outputs.labels , 'skip-ci-non-code-change') &&
+      !contains(needs.get-labels.outputs.labels, 'skip-ci-non-code-change') &&
       !contains(needs.get-labels.outputs.labels, 'breaking-change-esp-hal')
     runs-on: ubuntu-latest
     env:
