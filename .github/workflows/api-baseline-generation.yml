@@ -2,8 +2,7 @@ name: API Baseline Generation
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
     inputs:
       source_branch:
