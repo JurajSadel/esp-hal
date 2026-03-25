@@ -1,5 +1,6 @@
 name: Build HIL tests (composite)
 description: Checkout, install toolchains, build tests for a SoC, upload artifact
+
 inputs:
   event_name:
     description: github.event_name
@@ -20,6 +21,11 @@ inputs:
   rust_target:
     description: rust target triple
     required: true
+
+  test_type:
+    description: "Type of tests to build: hal|radio|all"
+    required: false
+    default: "all"
 
   tests:
     description: Optional comma-separated test names
@@ -59,20 +65,64 @@ runs:
         default: true
         version: 1.93.0.0
 
-    - name: Build tests
+    - name: Build HAL tests
+      if: ${{ inputs.test_type == 'hal' || inputs.test_type == 'all' }}
       shell: bash
       run: |
         if [ -n "${{ inputs.tests }}" ]; then
-          echo "Building selected tests for ${{ inputs.soc }}: ${{ inputs.tests }}"
-          cargo xtask build tests ${{ inputs.soc }} --tests "${{ inputs.tests }}"
+          echo "Building selected HAL tests for ${{ inputs.soc }}: ${{ inputs.tests }}"
+          cargo xtask build tests ${{ inputs.soc }} --exclude-radio --tests "${{ inputs.tests }}"
         else
-          echo "Building ALL tests for ${{ inputs.soc }}"
-          cargo xtask build tests ${{ inputs.soc }}
+          echo "Building ALL HAL tests for ${{ inputs.soc }}"
+          cargo xtask build tests ${{ inputs.soc }} --exclude-radio
         fi
 
-    - uses: actions/upload-artifact@v6
+    - name: Move HAL artifacts
+      if: ${{ inputs.test_type == 'hal' || inputs.test_type == 'all' }}
+      shell: bash
+      run: |
+        HAL_DIR=target/tests/${{ inputs.soc }}-hal
+        SRC_DIR=target/tests/${{ inputs.soc }}
+
+        mkdir -p "$HAL_DIR"
+        mv "$SRC_DIR"/* "$HAL_DIR"/ || true
+
+    - name: Build radio tests
+      if: ${{ inputs.test_type == 'radio' || inputs.test_type == 'all' }}
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.tests }}" ]; then
+          echo "Building selected radio tests for ${{ inputs.soc }}: ${{ inputs.tests }}"
+          cargo xtask build tests ${{ inputs.soc }} --only-radio --tests "${{ inputs.tests }}"
+        else
+          echo "Building ALL radio tests for ${{ inputs.soc }}"
+          cargo xtask build tests ${{ inputs.soc }} --only-radio
+        fi
+
+    - name: Move radio artifacts
+      if: ${{ inputs.test_type == 'radio' || inputs.test_type == 'all' }}
+      shell: bash
+      run: |
+        RADIO_DIR=target/tests/${{ inputs.soc }}-radio
+        SRC_DIR=target/tests/${{ inputs.soc }}
+
+        mkdir -p "$RADIO_DIR"
+        mv "$SRC_DIR"/* "$RADIO_DIR"/ || true
+
+    - name: Upload HAL test artifact
+      if: ${{ inputs.test_type == 'hal' || inputs.test_type == 'all' }}
+      uses: actions/upload-artifact@v6
       with:
-        name: tests-${{ inputs.soc }}
-        path: ${{ github.workspace }}/target/tests/${{ inputs.soc }}
-        if-no-files-found: error
+        name: tests-${{ inputs.soc }}-hal
+        path: target/tests/${{ inputs.soc }}-hal
+        if-no-files-found: ignore
+        overwrite: true
+
+    - name: Upload radio test artifact
+      if: ${{ inputs.test_type == 'radio' || inputs.test_type == 'all' }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: tests-${{ inputs.soc }}-radio
+        path: target/tests/${{ inputs.soc }}-radio
+        if-no-files-found: ignore
         overwrite: true

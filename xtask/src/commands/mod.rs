@@ -10,6 +10,7 @@ pub use self::{build::*, check_changelog::*, release::*, run::*};
 use crate::{
     Package,
     cargo::{CargoAction, CargoCommandBatcher},
+    radio_hil_runner::run_radio_test,
 };
 mod build;
 mod check_changelog;
@@ -285,6 +286,12 @@ pub struct TestsArgs {
     /// Emit crate build timings
     #[arg(long)]
     pub timings: bool,
+
+    #[arg(long, help = "Skip tests marked with //% RADIO_TEST")]
+    pub exclude_radio: bool,
+
+    #[arg(long, help = "Run only tests marked with //% RADIO_TEST")]
+    pub only_radio: bool,
 }
 
 // ----------------------------------------------------------------------------
@@ -406,6 +413,17 @@ pub fn examples(workspace: &Path, mut args: ExamplesArgs, action: CargoAction) -
     }
 }
 
+/// Detect if a test is a radio test by checking for //% RADIO_TEST comment
+fn is_radio_test(test: &crate::Metadata) -> bool {
+    match std::fs::read_to_string(test.example_path()) {
+        Ok(content) => content
+            .lines()
+            .take(5)
+            .any(|line| line.contains("//% RADIO_TEST")),
+        Err(_) => false,
+    }
+}
+
 /// Execute the given action on the specified HIL tests.
 pub fn tests(workspace: &Path, args: TestsArgs, action: CargoAction) -> Result<()> {
     // Absolute path of the 'hil-test' package's root:
@@ -415,13 +433,45 @@ pub fn tests(workspace: &Path, args: TestsArgs, action: CargoAction) -> Result<(
     let target = Package::HilTest.target_triple(&args.chip)?;
 
     // Load all tests which support the specified chip and parse their metadata:
-    let mut tests = crate::firmware::load(&package_path.join("src").join("bin"))?
+    let esp_hal_path = package_path.join("src").join("bin").join("esp_hal");
+    let esp_radio_path = package_path.join("src").join("bin").join("esp_radio");
+
+    let mut tests = crate::firmware::load(&esp_hal_path)?
         .into_iter()
         .filter(|example| example.supports_chip(args.chip))
         .collect::<Vec<_>>();
 
+    let esp_radio_tests = crate::firmware::load(&esp_radio_path)?
+        .into_iter()
+        .filter(|example| example.supports_chip(args.chip))
+        .collect::<Vec<_>>();
+
+    tests.extend(esp_radio_tests.clone());
+
+    // Filter tests based on metadata markers
+    tests.retain(|test| {
+        let is_radio = is_radio_test(test);
+
+        // If --only-radio is set, keep only radio tests
+        if args.only_radio {
+            return is_radio;
+        }
+
+        // If --exclude-radio is set (or default), exclude radio tests
+        if args.exclude_radio {
+            return !is_radio;
+        }
+
+        // Default behavior: keep all tests
+        true
+    });
+
     // Sort all tests by name:
     tests.sort_by_key(|a| a.binary_name());
+
+    if tests.is_empty() {
+        bail!("No tests found matching the criteria");
+    }
 
     if let CargoAction::Build(Some(out_dir)) = &action {
         // Make sure the tmp directory has no garbage for us.
@@ -486,7 +536,7 @@ pub fn tests(workspace: &Path, args: TestsArgs, action: CargoAction) -> Result<(
             )
         }
     } else {
-        for test in tests {
+        for test in &tests {
             let command = crate::generate_build_command(
                 &package_path,
                 args.chip,
@@ -515,12 +565,78 @@ pub fn tests(workspace: &Path, args: TestsArgs, action: CargoAction) -> Result<(
             "Command: cargo {}",
             c.command.join(" ").replace("---", "\n    ---")
         );
-        for i in 0..repeat {
-            if repeat != 1 {
-                log::info!("Run {}/{}", i + 1, repeat);
+
+        let is_radio_test = c.artifact_name.starts_with("esp_radio");
+
+        if is_radio_test && matches!(action, CargoAction::Run) {
+            let binary_name = "esp_radio";
+            let test_metadata = tests.iter().find(|t| t.binary_name() == binary_name);
+
+            if let Some(metadata) = test_metadata {
+                let mut build_cmd = c.clone();
+
+                if let Some(pos) = build_cmd.command.iter().position(|x| x == "run") {
+                    build_cmd.command[pos] = "build".to_string();
+                }
+
+                if let Some(pos) = build_cmd
+                    .command
+                    .iter()
+                    .position(|x| x.starts_with("--bin="))
+                {
+                    build_cmd.command[pos] = format!("--bin={}", metadata.binary_name());
+                }
+
+                if !build_cmd.command.iter().any(|x| x == "--release") {
+                    build_cmd.command.push("--release".to_string());
+                }
+
+                log::info!(
+                    "Building radio test with command: {}",
+                    build_cmd.command.join(" ")
+                );
+
+                if build_cmd.run(false).is_err() {
+                    failed.push(c.artifact_name.clone());
+                    log::error!("Failed to build radio test");
+                    continue;
+                }
+
+                let binary_path = workspace
+                    .join("target")
+                    .join(&target)
+                    .join("release")
+                    .join(metadata.binary_name());
+
+                log::info!("Looking for binary at: {}", binary_path.display());
+
+                if !binary_path.exists() {
+                    bail!("Radio test binary not found: {}", binary_path.display());
+                }
+
+                for i in 0..repeat {
+                    if repeat != 1 {
+                        log::info!("Run {}/{}", i + 1, repeat);
+                    }
+                    if let Err(e) = run_radio_test(&binary_path, "wifi_ap", "wifi_dhcp", 120, None)
+                    {
+                        failed.push(c.artifact_name.clone());
+                        log::error!("Radio test failed: {}", e);
+                        break;
+                    }
+                }
+            } else {
+                bail!("Could not find test metadata for binary: esp_radio");
             }
-            if c.run(false).is_err() {
-                failed.push(c.artifact_name.clone());
+        } else {
+            // For HAL tests, use normal probe-rs runner
+            for i in 0..repeat {
+                if repeat != 1 {
+                    log::info!("Run {}/{}", i + 1, repeat);
+                }
+                if c.run(false).is_err() {
+                    failed.push(c.artifact_name.clone());
+                }
             }
         }
     }

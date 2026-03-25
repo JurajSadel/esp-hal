@@ -97,7 +97,10 @@ fn toolchain_folder(toolchain: &str) -> Result<PathBuf> {
 
     match parsed.iter().find(|(name, _)| name == toolchain) {
         Some((_, folder)) => Ok(PathBuf::from(folder)),
-        None => Err(anyhow::anyhow!("Toolchain {toolchain} not found. Found {:?}", parsed)),
+        None => Err(anyhow::anyhow!(
+            "Toolchain {toolchain} not found. Found {:?}",
+            parsed
+        )),
     }
 }
 
@@ -485,7 +488,6 @@ fn revert_scrap_path_deps() -> Result<()> {
     let pkgs = [
         crate::Package::Examples.to_string(),
         crate::Package::HilTest.to_string(),
-        crate::Package::HilTestRadio.to_string(),
         crate::Package::QaTest.to_string(),
     ];
 
@@ -528,7 +530,6 @@ fn scrap_path_deps() -> Result<()> {
     let pkgs = [
         crate::Package::Examples.to_string(),
         crate::Package::HilTest.to_string(),
-        crate::Package::HilTestRadio.to_string(),
         crate::Package::QaTest.to_string(),
     ];
 

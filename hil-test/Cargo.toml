@@ -7,85 +7,112 @@ publish = false
 [lib]
 name = "hil_test"
 
+# esp-hal tests:
 [[bin]]
 name              = "alloc_psram"
+path              = "src/bin/esp_hal/alloc_psram.rs"
 harness           = false
 required-features = ["psram"]
-
+ 
 [[bin]]
 name              = "crypto"
+path              = "src/bin/esp_hal/crypto.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "embassy_timers_executors"
+path              = "src/bin/esp_hal/embassy_timers_executors.rs"
 harness           = false
 required-features = ["embassy"]
 
 [[bin]]
-name              = "esp_radio"
+name              = "radio_basic"
+path              = "src/bin/esp_hal/radio_basic.rs"
 harness           = false
 required-features = ["esp-alloc"]
-
+ 
 [[bin]]
 name              = "gpio"
+path              = "src/bin/esp_hal/gpio.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "gpio_custom_handler"
+path              = "src/bin/esp_hal/gpio_custom_handler.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "i2c"
+path              = "src/bin/esp_hal/i2c.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "i2s"
+path              = "src/bin/esp_hal/i2s.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "interrupt"
+path              = "src/bin/esp_hal/interrupt.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "lcd_cam"
+path              = "src/bin/esp_hal/lcd_cam.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "misc_drivers"
+path              = "src/bin/esp_hal/misc_drivers.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "misc_non_drivers"
+path              = "src/bin/esp_hal/misc_non_drivers.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "parl_io"
+path              = "src/bin/esp_hal/parl_io.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "rmt"
+path              = "src/bin/esp_hal/rmt.rs"
 harness           = false
 required-features = ["embassy", "esp-alloc"]
-
+ 
 [[bin]]
 name              = "spi_full_duplex"
+path              = "src/bin/esp_hal/spi_full_duplex.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "spi_half_duplex_slave_qspi"
+path              = "src/bin/esp_hal/spi_half_duplex_slave_qspi.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "spi_half_duplex_write_psram"
+path              = "src/bin/esp_hal/spi_half_duplex_write_psram.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "storage_read_app_desc"
+path              = "src/bin/esp_hal/storage_read_app_desc.rs"
 harness           = false
-
+ 
 [[bin]]
 name              = "uart"
+path              = "src/bin/esp_hal/uart.rs"
 harness           = false
+ 
+# esp-radio tests
+[[bin]]
+name              = "esp_radio"
+path              = "src/bin/esp_radio/esp_radio.rs"
+harness           = false
+required-features = ["esp-alloc", "esp-radio"]
 
 [dependencies]
 allocator-api2    = { version = "0.3.0", default-features = false, features = ["alloc"] }
@@ -135,6 +162,18 @@ p256                = { version = "0.13.2", default-features = false, features =
 p384                = { version = "0.13.1", default-features = false, features = ["arithmetic"] }
 sha1                = { version = "0.10.6", default-features = false }
 sha2                = { version = "0.10.8", default-features = false }
+
+# radio HIL deps
+embassy-net = { version = "0.8.0", features = [
+    "dhcpv4",
+    "medium-ethernet",
+    "tcp",
+    "dns",
+] }
+reqwless = { version = "0.14.0", default-features = false }
+edge-dhcp = "0.7.0"
+edge-nal = "0.6.0"
+edge-nal-embassy = "0.8.1"
 
 [build-dependencies]
 esp-metadata-generated = { path = "../esp-metadata-generated", features = ["build-script"] }

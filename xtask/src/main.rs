@@ -740,6 +740,8 @@ fn run_ci_checks(workspace: &Path, args: CiArgs) -> Result<()> {
                 test: None,
                 toolchain: None,
                 timings: false,
+                exclude_radio: false,
+                only_radio: false,
             },
             CargoAction::Build(Some(target_path.join("tests"))),
         )

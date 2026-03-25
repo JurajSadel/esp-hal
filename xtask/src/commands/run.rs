@@ -13,6 +13,7 @@ use crate::{
     Package,
     cargo::{CargoAction, CargoArgsBuilder},
     firmware::Metadata,
+    radio_hil_runner::run_radio_test,
 };
 
 // ----------------------------------------------------------------------------
@@ -34,10 +35,13 @@ pub enum Run {
 // Subcommand Arguments
 
 /// Arguments for running ELFs.
-#[cfg_attr(feature = "mcp", xtask_mcp_macros::mcp_tool(
-    description = "Run all ELFs in a folder using probe-rs",
-    command = "run elfs"
-))]
+#[cfg_attr(
+    feature = "mcp",
+    xtask_mcp_macros::mcp_tool(
+        description = "Run all ELFs in a folder using probe-rs",
+        command = "run elfs"
+    )
+)]
 #[derive(Debug, Args)]
 pub struct RunElfsArgs {
     /// Which chip to run the tests for.
@@ -175,19 +179,32 @@ pub fn run_elfs(args: RunElfsArgs) -> Result<()> {
 
         log::info!("Running test '{}' for '{}'", elf_name, args.chip);
 
-        let mut command = Command::new("probe-rs");
-        command.arg("run").arg(&elf_path);
-        command.arg("--verify");
+        // Check if this is a radio test (contains "esp_radio" in the name)
+        let is_radio_test = elf_name.contains("esp_radio");
 
-        let mut command = command.spawn().context("Failed to execute probe-rs")?;
-        let status = command
-            .wait()
-            .context("Error while waiting for probe-rs to exit")?;
+        if is_radio_test {
+            // Use dual-device radio test runner
+            if let Err(e) = run_radio_test(&elf_path, "wifi_ap", "wifi_dhcp", 120, None) {
+                failed.push(elf_name.clone());
+                log::error!("Radio test '{}' failed: {}", elf_name.clone(), e);
+            } else {
+                log::info!("'{}' passed", elf_name);
+            }
+        } else {
+            // Use standard probe-rs runner for HAL tests
+            let mut command = Command::new("probe-rs");
+            command.arg("run").arg(&elf_path).arg("--verify");
 
-        log::info!("'{elf_name}' done");
+            let mut child = command.spawn().context("Failed to execute probe-rs")?;
+            let status = child
+                .wait()
+                .context("Error while waiting for probe-rs to exit")?;
 
-        if !status.success() {
-            failed.push(elf_name);
+            log::info!("'{}' done", elf_name);
+
+            if !status.success() {
+                failed.push(elf_name);
+            }
         }
     }
 

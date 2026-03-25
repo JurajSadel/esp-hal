@@ -187,9 +187,7 @@ fn parse_meta_line(line: &str) -> anyhow::Result<MetaLine> {
 pub fn load(path: &Path) -> Result<Vec<Metadata>> {
     let mut examples = Vec::new();
 
-    println!("Loading examples from {}", path.display());
-
-    for entry in fs::read_dir(path).context("Failed to read {path}")? {
+    for entry in fs::read_dir(&path).context("Failed to read {path}")? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
@@ -275,6 +273,10 @@ pub fn load(path: &Path) -> Result<Vec<Metadata>> {
                 // Tags by which the user can filter examples.
                 "TAG" => {
                     relevant_metadata.apply(|meta| meta.tag = Some(meta_line.value.to_string()));
+                }
+                // radio test require 2 devices
+                "RADIO_TEST" => {
+                    relevant_metadata.apply(|meta| meta.tag = Some("radio_test".to_string()));
                 }
                 key => log::warn!("Unrecognized metadata key '{key}', ignoring"),
             }
