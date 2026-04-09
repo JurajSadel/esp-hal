@@ -70,7 +70,7 @@ use crate::efuse::ChipRevision;
 #[cfg(all(
     soc_has_clock_node_timg_calibration_clock,
     timergroup_rc_fast_calibration_divider,
-    any(esp32c6, esp32h2)
+    esp32h2
 ))]
 use crate::peripherals::PCR;
 #[instability::unstable]
@@ -361,7 +361,7 @@ impl Clocks {
         clocks::request_timg_calibration_clock(clocks);
 
         // Align with IDF ECO-specific RC_FAST calibration flow.
-        #[cfg(all(timergroup_rc_fast_calibration_divider, any(esp32c6, esp32h2)))]
+        #[cfg(all(timergroup_rc_fast_calibration_divider, esp32h2))]
         if use_rc_fast_calibration_divider {
             PCR::regs()
                 .ctrl_tick_conf()
@@ -441,7 +441,7 @@ impl Clocks {
             .rtccalicfg()
             .modify(|_, w| w.rtc_cali_start().clear_bit());
 
-        #[cfg(all(timergroup_rc_fast_calibration_divider, any(esp32c6, esp32h2)))]
+        #[cfg(all(timergroup_rc_fast_calibration_divider, esp32h2))]
         if use_rc_fast_calibration_divider {
             PCR::regs()
                 .ctrl_tick_conf()
