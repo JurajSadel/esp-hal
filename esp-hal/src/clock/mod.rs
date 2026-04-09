@@ -320,18 +320,22 @@ impl Clocks {
         use esp_rom_sys::rom::ets_delay_us;
 
         #[cfg(timergroup_rc_fast_calibration_divider)]
-        let use_rc_fast_calibration_divider = rtc_clock == TimgCalibrationClockConfig::RcFastDivClk
+        let calibration_divider = if rtc_clock == TimgCalibrationClockConfig::RcFastDivClk
             && crate::soc::chip_revision_above(ChipRevision::from_combined(property!(
                 "timergroup.rc_fast_calibration_divider_min_rev"
-            )));
-        #[cfg(timergroup_rc_fast_calibration_divider)]
-        let calibration_divider = if use_rc_fast_calibration_divider {
+            ))) {
             property!("timergroup.rc_fast_calibration_divider")
         } else {
             1
         };
         #[cfg(not(timergroup_rc_fast_calibration_divider))]
         let calibration_divider = 1;
+
+        #[cfg(all(timergroup_rc_fast_calibration_divider, esp32h2))]
+        let use_rc_fast_calibration_divider = rtc_clock == TimgCalibrationClockConfig::RcFastDivClk
+            && crate::soc::chip_revision_above(ChipRevision::from_combined(property!(
+                "timergroup.rc_fast_calibration_divider_min_rev"
+            )));
 
         // On some revisions calibration uses a divided RC_FAST tick.
         let calibration_cycles = (slow_cycles / calibration_divider).max(1);
