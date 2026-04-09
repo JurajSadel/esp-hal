@@ -74,6 +74,8 @@ pub(crate) fn init() {
     }
 
     // Keep RC_FAST calibration timing aligned with ESP-IDF for H2.
+    // IDF applies `fosc_tick_num = 255` for RC_FAST calibration setup without
+    // revision gating; only `tick_enable` is ECO2+-specific.
     PCR::regs()
         .ctrl_tick_conf()
         .modify(|_, w| unsafe { w.fosc_tick_num().bits(255) });
