@@ -503,14 +503,7 @@ impl SleepTimeConfig {
 
         // Calibrate rtc fast clock, only PMU supported chips sleep process is needed.
         const FAST_CLK_SRC_CAL_CYCLES: u32 = 2048;
-        let fastclk_period = match Self::rtc_clk_cal_fast(FAST_CLK_SRC_CAL_CYCLES) {
-            0 => {
-                // Fall back to the nominal RC_FAST frequency to avoid panicking when sleep
-                // timing conversion runs before a successful calibration.
-                ((1_000_000u64 << Self::RTC_CLK_CAL_FRACT) / 8_000_000u64) as u32
-            }
-            period => period,
-        };
+        let fastclk_period = Self::rtc_clk_cal_fast(FAST_CLK_SRC_CAL_CYCLES);
 
         Self {
             sleep_time_adjustment: 0,

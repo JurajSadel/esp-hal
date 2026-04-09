@@ -73,11 +73,10 @@ pub(crate) fn init() {
             .modify(|_, w| w.ana_wait_target().bits(1700));
     }
 
-    // Keep RC_FAST calibration timing aligned with ESP-IDF for H2 ECO2+.
-    PCR::regs().ctrl_tick_conf().modify(|_, w| unsafe {
-        w.fosc_tick_num().bits(255);
-        w.tick_enable().set_bit()
-    });
+    // Keep RC_FAST calibration timing aligned with ESP-IDF for H2.
+    PCR::regs()
+        .ctrl_tick_conf()
+        .modify(|_, w| unsafe { w.fosc_tick_num().bits(255) });
 }
 
 // Terminology:
