@@ -1,6 +1,9 @@
 use strum::FromRepr;
 
-use crate::{peripherals::PMU, soc::regi2c};
+use crate::{
+    peripherals::{PCR, PMU},
+    soc::regi2c,
+};
 
 pub(crate) fn init() {
     // * No peripheral reg i2c power up required on the target */
@@ -69,6 +72,11 @@ pub(crate) fn init() {
         pmu.slp_wakeup_cntl7()
             .modify(|_, w| w.ana_wait_target().bits(1700));
     }
+
+    // Keep RC_FAST calibration timing aligned with ESP-IDF for H2 ECO2+.
+    PCR::regs()
+        .ctrl_tick_conf()
+        .modify(|r, w| unsafe { w.bits((r.bits() & !(0xff << 8)) | (0xff << 8) | (1 << 16)) });
 }
 
 // Terminology:
