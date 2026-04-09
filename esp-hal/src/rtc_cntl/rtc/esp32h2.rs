@@ -74,9 +74,10 @@ pub(crate) fn init() {
     }
 
     // Keep RC_FAST calibration timing aligned with ESP-IDF for H2 ECO2+.
-    PCR::regs()
-        .ctrl_tick_conf()
-        .modify(|r, w| unsafe { w.bits((r.bits() & !(0xff << 8)) | (0xff << 8) | (1 << 16)) });
+    PCR::regs().ctrl_tick_conf().modify(|_, w| unsafe {
+        w.fosc_tick_num().bits(255);
+        w.tick_enable().set_bit()
+    });
 }
 
 // Terminology:
