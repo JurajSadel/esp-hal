@@ -269,7 +269,7 @@ jobs:
               "matrix": "quick",
               "pr_number": "${{ github.event.issue.number }}",
               "chips": "",
-              "tests": "${{ steps.parse-tests.outputs.tests }}"
+              "tests": "${{ steps.parse-tests.outputs.tests }}",
               "package": "${{ steps.parse-tests.outputs.package }}"
             }
 
