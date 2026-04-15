@@ -12,6 +12,11 @@ name              = "esp_radio"
 harness           = false
 required-features = ["esp-alloc"]
 
+[[bin]]
+name              = "wifi_ap_support"
+harness           = false
+required-features = ["esp-alloc"]
+
 [dependencies]
 cfg-if             = "1"
 # critical-section   = "1"
