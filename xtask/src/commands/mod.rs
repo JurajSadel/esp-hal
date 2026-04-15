@@ -626,7 +626,10 @@ pub fn tests(workspace: &Path, args: TestsArgs, action: CargoAction) -> Result<(
     }
 
     let mut failed = Vec::new();
-    let built_commands = commands.build(false);
+    // Radio run orchestration depends on per-artifact metadata, so avoid
+    // cargo-batch collapsing commands into a single synthetic "batch" artifact.
+    let no_batch = is_radio_package && matches!(action, CargoAction::Run);
+    let built_commands = commands.build(no_batch);
 
     if is_radio_package && matches!(action, CargoAction::Run) {
         // Build all selected radio artifacts first to ensure support firmware is
