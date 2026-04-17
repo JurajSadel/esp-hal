@@ -433,7 +433,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: tests-${{ matrix.target.soc }}
+          name: tests-${{ matrix.target.soc }}-hil-test
           path: tests-${{ matrix.target.soc }}
         continue-on-error: true
 
@@ -527,7 +527,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: tests-${{ matrix.target.soc }}
+          name: tests-${{ matrix.target.soc }}-hil-test
           path: tests-${{ matrix.target.soc }}
         continue-on-error: true
 
