@@ -355,11 +355,6 @@ pub fn enable_direct(
         core::arch::asm!("fence.i");
     }
 
-    super::map_raw(Cpu::current(), interrupt, cpu_interrupt as u32);
-    cpu_int::set_priority_raw(cpu_interrupt as u32, level);
-    cpu_int::set_kind_raw(cpu_interrupt as u32, InterruptKind::Level);
-    cpu_int::enable_cpu_interrupt_raw(cpu_interrupt as u32);
-
     #[cfg(esp32p4)]
     unsafe {
         // Write back the cache to make sure the new interrupt handler is visible to the CPU.
@@ -367,6 +362,11 @@ pub fn enable_direct(
         // Invalidate the cache to make sure the CPU does not read from a stale instruction cache.
         crate::soc::cache_invalidate_addr(mtvt_table as u32, 48 * 4);
     }
+
+    super::map_raw(Cpu::current(), interrupt, cpu_interrupt as u32);
+    cpu_int::set_priority_raw(cpu_interrupt as u32, level);
+    cpu_int::set_kind_raw(cpu_interrupt as u32, InterruptKind::Level);
+    cpu_int::enable_cpu_interrupt_raw(cpu_interrupt as u32);
 }
 
 // helper: returns correctly encoded RISC-V `jal` instruction
@@ -464,8 +464,6 @@ pub(crate) unsafe fn init_vectoring() {
 
     unsafe extern "C" {
         static _vector_table: u32;
-        #[cfg(interrupt_controller = "clic")]
-        static _mtvt_table: u32;
     }
 
     unsafe {
@@ -490,10 +488,29 @@ pub(crate) unsafe fn init_vectoring() {
             });
 
             // set mtvt (hardware vector base)
-            let mtvt_table = (&raw const _mtvt_table).addr();
+            let mtvt_table = match Cpu::current() {
+                Cpu::ProCpu => {
+                    unsafe extern "C" {
+                        static _mtvt_table: u32;
+                    }
+                    (&raw const _mtvt_table).addr()
+                }
+                #[cfg(multi_core)]
+                Cpu::AppCpu => {
+                    unsafe extern "C" {
+                        static _mtvt_table2: u32;
+                    }
+                    (&raw const _mtvt_table2).addr()
+                }
+            };
             core::arch::asm!("csrw 0x307, {0}", in(reg) mtvt_table);
         }
     };
+
+    // Configure CLIC for hardware-vectored mode (shv=1) and set nlbits.
+    // Must run on each core since CLIC control registers are per-core.
+    #[cfg(feature = "rt")]
+    cpu_int::init();
 
     // Configure and enable vectored interrupts
     for (int, prio) in PRIORITY_TO_INTERRUPT.iter().copied().zip(Priority::iter()) {
@@ -558,8 +575,6 @@ pub(crate) mod rt {
     #[unsafe(no_mangle)]
     unsafe fn _setup_interrupts() {
         crate::interrupt::setup_interrupts();
-
-        cpu_int::init();
 
         #[cfg(interrupt_controller = "plic")]
         unsafe {

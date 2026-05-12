@@ -6,12 +6,34 @@ crate::unstable_module! {
     pub mod clocks;
 }
 
+pub(crate) mod cpu_control;
 pub(crate) mod regi2c;
 
 pub(crate) use esp32p4 as pac;
 
 pub(crate) fn pre_init() {
-    // TODO: Check if anything needs to be done here
+    #[cfg(multi_core)]
+    unsafe {
+        // Stall Core 1 first (PMU stall), then disable its clock and assert
+        // global reset. This undoes any state left by start_core1() that
+        // may have survived a software reset, preventing Core 1 from running
+        // during the ROM bootloader phase and interfering with espflash.
+        cpu_control::internal_park_core(crate::system::Cpu::AppCpu, true);
+        cpu_control::disable_core1();
+    }
+}
+
+pub(crate) fn enable_branch_predictor() {
+    // Enable branch predictor
+    // Note that the branch predictor will start cache requests and needs to be disabled when
+    // the cache is disabled.
+    // MHCR: CSR 0x7c1
+    const MHCR_RS: u32 = 1 << 4; // R/W, address return stack set bit
+    const MHCR_BFE: u32 = 1 << 5; // R/W, allow predictive jump set bit
+    const MHCR_BTB: u32 = 1 << 12; // R/W, branch target prediction enable bit
+    unsafe {
+        core::arch::asm!("csrrs x0, 0x7c1, {0}", in(reg) MHCR_RS | MHCR_BFE | MHCR_BTB);
+    }
 }
 
 const CACHE_MAP_L1_ICACHE_0: u32 = 1 << 0;
