@@ -1,0 +1,7 @@
+targets:
+  - esp32s3
+
+dependencies:
+  idf: ">=5.1"
+  lvgl/lvgl: "^8"
+  espressif/esp-box: "^3.0.0"
