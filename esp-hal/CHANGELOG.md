@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - P4: enable multi-core support (#5535)
 - C5 and C61: I2S support (#5483)
 - UART: `send_break_async` (#5536)
+- Added support for embassy-usb-host (#5283)
 - `handle_gpio_interrupt` and `wake_pin()` for user-defined GPIO ISRs (#5531)
 - GPIO: `Input::wait_for_with_options()` allows waking from light sleep while waiting for event (#5551)
 
@@ -28,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SPI: `SpiDmaBus` has been merged into `SpiDma`. `with_buffers` now returns `SpiDma` directly, and the buffer-taking transfer methods have been renamed to `read_buffer`, `write_buffer`, `transfer_buffers`, `half_duplex_read_buffer` and `half_duplex_write_buffer` to avoid conflicts with the `SpiBus` trait methods. (#5272)
 - SPI: `SpiDma` will now skip copying into the internal buffers unless necessary (#5290)
 - `#[esp_hal::main]` can now serve as the entry point for both `esp-hal` and `esp-rtos` applications (#5541)
+- The embassy-usb device driver has been moved from `esp_hal::otg_fs::asynch` to `esp_hal::otg_fs::embassy_usb_device`. (#5283)
 
 ### Fixed
 
