@@ -129,7 +129,7 @@ mod mintstatus {
     }
 }
 
-#[cfg(feature = "rt")]
+#[cfg(any(feature = "rt", all(feature = "unstable", multi_core)))]
 core::arch::global_asm!(
     r#"
 
@@ -207,7 +207,7 @@ _mtvt_table:
 );
 
 // Core 2
-#[cfg(all(feature = "rt", multi_core))]
+#[cfg(all(any(feature = "rt", feature = "unstable"), multi_core))]
 core::arch::global_asm!(
     r#"
     .section .trap, "ax"
