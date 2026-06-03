@@ -108,8 +108,8 @@ jobs:
       - uses: actions/checkout@v6
         if: github.event_name == 'workflow_dispatch'
         with:
-          repository: ${{ github.event.inputs.repository }}
-          ref: ${{ github.event.inputs.branch }}
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.branch }}
 
       - uses: esp-rs/xtensa-toolchain@v1.6
         if: steps.arch.outputs.xtensa == 'true'
@@ -147,11 +147,32 @@ jobs:
             fi
           done
 
+      # Only upload chip directories we built. rust-cache can leave stale entries
+      # (e.g. trybuild/, target/) under target/tests/ that break upload-artifact.
+      - name: Stage test artifacts
+        id: stage-tests
+        run: |
+          STAGE="${RUNNER_TEMP}/hil-tests"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          CHIPS=$(echo '${{ steps.chips.outputs.matrix }}' | jq -r '.target[].soc')
+          FOUND=0
+          for chip in $CHIPS; do
+            if [ -d "target/tests/$chip" ]; then
+              cp -a "target/tests/$chip" "$STAGE/"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "::warning::No test binaries were built for upload"
+          fi
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+
       - name: Upload test artifacts
         uses: actions/upload-artifact@v6
         with:
           name: hil-tests
-          path: target/tests/
+          path: ${{ steps.stage-tests.outputs.stage }}/
           if-no-files-found: warn
 
       # xtask runs on the HIL runners as a host tool.

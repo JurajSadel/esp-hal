@@ -499,10 +499,29 @@ jobs:
             fi
           done
 
+      - name: Stage test artifacts
+        id: stage-tests
+        run: |
+          STAGE="${RUNNER_TEMP}/hil-tests"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          FOUND=0
+          for chip in esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c5 esp32c6 esp32c61 esp32h2 esp32p4; do
+            if [ -d "target/tests/$chip" ]; then
+              cp -a "target/tests/$chip" "$STAGE/"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "::error::No test binaries were built for upload"
+            exit 1
+          fi
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v6
         with:
           name: hil-tests
-          path: target/tests/
+          path: ${{ steps.stage-tests.outputs.stage }}/
           if-no-files-found: error
 
   # Device runs — not gated by ci-result.
