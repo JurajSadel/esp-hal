@@ -553,11 +553,14 @@ mod tests {
     fn parses_binary_filter() {
         let filters = parse_elf_filters(&strings(&[" misc_non_drivers "])).unwrap();
 
-        assert_eq!(filters, vec![ElfFilter {
-            raw: "misc_non_drivers".to_string(),
-            binary: "misc_non_drivers".to_string(),
-            test_filter: None,
-        }]);
+        assert_eq!(
+            filters,
+            vec![ElfFilter {
+                raw: "misc_non_drivers".to_string(),
+                binary: "misc_non_drivers".to_string(),
+                test_filter: None,
+            }]
+        );
     }
 
     #[test]
@@ -567,11 +570,14 @@ mod tests {
         ]))
         .unwrap();
 
-        assert_eq!(filters, vec![ElfFilter {
-            raw: "Misc_Non_Drivers::wifi_controller::tests::test_scan_doesnt_leak".to_string(),
-            binary: "misc_non_drivers".to_string(),
-            test_filter: Some("wifi_controller::tests::test_scan_doesnt_leak".to_string()),
-        }]);
+        assert_eq!(
+            filters,
+            vec![ElfFilter {
+                raw: "Misc_Non_Drivers::wifi_controller::tests::test_scan_doesnt_leak".to_string(),
+                binary: "misc_non_drivers".to_string(),
+                test_filter: Some("wifi_controller::tests::test_scan_doesnt_leak".to_string()),
+            }]
+        );
     }
 
     #[test]
