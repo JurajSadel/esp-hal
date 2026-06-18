@@ -198,6 +198,13 @@ jobs:
 
       - name: Build hil-test-radio tests
         if: ${{ inputs.package != 'hil-test' }}
+        # Pin the compile-time defmt level so radio binaries are built with the
+        # same (stable) verbosity regardless of trigger. trace/debug logging
+        # from the Wi-Fi/BLE stacks floods the ESP32-C6 USB-Serial-JTAG/RTT link
+        # during the radio HIL run and makes probe-rs time out. The radio runner
+        # only prints at `info` (see xtask radio_hil_runner) anyway.
+        env:
+          DEFMT_LOG: info
         run: |
           CHIPS=$(echo '${{ steps.chips.outputs.matrix }}' | jq -r '.target[].soc')
           TESTS="${{ inputs.tests }}"

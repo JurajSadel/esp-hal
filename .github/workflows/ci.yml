@@ -495,6 +495,16 @@ jobs:
         run: rm -rf target/tests
 
       - name: Build hil-test-radio tests
+        # defmt filtering is resolved at *compile time* from DEFMT_LOG. The
+        # workflow-level `DEFMT_LOG: trace` bakes trace+debug logging from the
+        # Wi-Fi/BLE stacks into the radio firmware, which floods the ESP32-C6
+        # USB-Serial-JTAG/RTT link during the radio HIL run and makes probe-rs
+        # time out attaching to the harness/DUT. The radio runner only prints at
+        # `info` anyway (see xtask radio_hil_runner), so build the radio
+        # binaries at `info` to keep the link stable and match the
+        # manually-dispatched (hil.yml) path.
+        env:
+          DEFMT_LOG: info
         run: |
           for chip in esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c5 esp32c6 esp32c61 esp32h2; do
             if cargo xtask build tests "$chip" hil-test-radio --help >/dev/null 2>&1; then
