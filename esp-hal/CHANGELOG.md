@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UART: disallow 0 as the RX FIFO full threshold (#5451)
 - UART: prevent returning 0 from `read_async` (#5451)
 - ESP32-S2, ESP32-S3: Fixed a bug where `UlpCore.run()` with `UlpCoreWakeupSource::HpCpu` fails to wake the ULP Core (#5410)
+- ESP32-C6: Keep the modem BBPLL/analog-I2C powered across light-sleep when the modem power domain is not powered down, so Wi-Fi/BLE keep working after wakeup (#3873)
 
 ### Removed
 
