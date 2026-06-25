@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UART: disallow 0 as the RX FIFO full threshold (#5451)
 - UART: prevent returning 0 from `read_async` (#5451)
 - ESP32-S2, ESP32-S3: Fixed a bug where `UlpCore.run()` with `UlpCoreWakeupSource::HpCpu` fails to wake the ULP Core (#5410)
+- `wakeup_cause` now reports the wakeup source after a light sleep, instead of always returning `SleepSource::Undefined` (#3306)
 
 ### Removed
 
