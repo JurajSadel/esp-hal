@@ -1,45 +1,33 @@
-//! # CPU power-down retention during light sleep (ESP32-C6)
+//! CPU power-down retention during light sleep (ESP32-C6).
 //!
-//! ## Overview
+//! During light sleep the C6 can power down the CPU domain (`pd_cpu`) while the
+//! rest of the digital system stays powered. That loses all CPU state, so it is
+//! saved before sleeping and restored on wakeup. The CPU register file and CSRs
+//! are not reachable by regDMA, so (like ESP-IDF's `esp_sleep_cpu_retention()`)
+//! this is done in software. The ~1 KiB of backing RAM ([`CpuRetentionMemory`])
+//! is caller-owned and opt-in via [`RtcSleepConfig::with_cpu_power_down`];
+//! without it, light sleep just clock-gates the CPU.
 //!
-//! During light sleep the ESP32-C6 can additionally power **down the CPU power
-//! domain** (`pd_cpu`) while the rest of the digital system (the `TOP` domain:
-//! RAM, peripherals, ...) stays powered. Powering the CPU down loses all of its
-//! state, so before sleeping we save everything required to resume execution and
-//! restore it on wakeup.
-//!
-//! Unlike peripheral (`TOP`-domain) retention, CPU retention does **not** use the
-//! regDMA/PAU engine. The CPU register file and CSRs are not reachable by regDMA,
-//! so ESP-IDF saves/restores them in **software**, which is exactly what this
-//! module does. It mirrors `esp_sleep_cpu_retention()` in
-//! `components/esp_hw_support/lowpower/port/esp32c6/sleep_cpu.c`.
+//! [`RtcSleepConfig::with_cpu_power_down`]: crate::rtc_cntl::sleep::RtcSleepConfig::with_cpu_power_down
 //!
 //! The save/restore is split into three parts, matching ESP-IDF:
 //!
-//! 1. **Critical registers** - the general-purpose registers and the handful of
-//!    machine CSRs needed to resume the interrupted control flow (`mepc`,
-//!    `mstatus`, `mtvec`, ...). Saved and restored in assembly
-//!    (`rv_core_critical_regs_save` / `rv_core_critical_regs_restore`), using a
-//!    `setjmp`/`longjmp`-style trick: the save routine records the return
-//!    context and, on wakeup, the ROM jumps to the restore routine which returns
-//!    *as if the save routine had just returned*.
-//! 2. **Non-critical CSRs** - the rest of the architectural CSR state (PMP/PMA,
-//!    trigger module, performance counters, ...). Saved/restored in Rust via
-//!    `csrr`/`csrw`.
-//! 3. **CPU-domain device registers** - memory-mapped registers that live in the
-//!    CPU power domain (interrupt matrix priority `INTPRI`, the `PLIC`/`CLINT`
-//!    interrupt controllers and the L1 cache control). Saved/restored with plain
-//!    loads/stores.
+//! 1. **Critical registers**: the general-purpose registers and the machine
+//!    CSRs needed to resume the interrupted control flow (`mepc`, `mstatus`,
+//!    `mtvec`, ...), saved/restored in assembly (`rv_core_critical_regs_save` /
+//!    `..._restore`) using a `setjmp`/`longjmp`-style trick: on wakeup the ROM
+//!    jumps to the restore routine, which returns as if the save routine had.
+//! 2. **Non-critical CSRs**: the rest of the architectural CSR state (PMP/PMA,
+//!    trigger module, performance counters, ...), saved/restored via `csrr`/
+//!    `csrw`.
+//! 3. **CPU-domain device registers**: `INTPRI`, the `PLIC`/`CLINT` interrupt
+//!    controllers and the L1 cache control, saved/restored with loads/stores.
 //!
-//! ## Wakeup path
-//!
-//! The whole save -> sleep -> restore path runs from **internal RAM** (`.rwtext`,
-//! i.e. IRAM). This is mandatory: when the CPU is powered back up the ROM jumps
-//! directly to the wake-stub address we program into `LP_AON_STORE8`
-//! (`RTC_SLEEP_WAKE_STUB_ADDR_REG`), and at that point the flash cache state has
-//! been lost. Only after the cache configuration is restored may we touch flash
-//! again, so every function on this path is annotated `#[ram]` and must avoid
-//! calling into flash-resident code.
+//! The whole save -> sleep -> restore path runs from IRAM (`.rwtext`): on
+//! power-up the ROM jumps to the wake stub we program into `LP_AON_STORE8`
+//! (`RTC_SLEEP_WAKE_STUB_ADDR_REG`) with the flash cache lost, so every function
+//! here is `#[ram]` and must not call into flash-resident code until the cache
+//! config is restored.
 //!
 //! References (ESP-IDF `v5.4`, commit
 //! `8e27ea72c6688b79348b123ff40d556cfe16c8c3`, ESP32-C6):
@@ -47,26 +35,27 @@
 //! - [`sleep_cpu_asm.S`](https://github.com/espressif/esp-idf/blob/8e27ea72c6688b79348b123ff40d556cfe16c8c3/components/esp_hw_support/lowpower/port/esp32c6/sleep_cpu_asm.S)
 //! - [`rvsleep-frames.h`](https://github.com/espressif/esp-idf/blob/8e27ea72c6688b79348b123ff40d556cfe16c8c3/components/esp_hw_support/lowpower/port/esp32c6/include/rvsleep-frames.h)
 
-use core::{
-    ptr::addr_of_mut,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use procmacros::ram;
 
 use crate::peripherals::{LP_AON, PMU};
 
-/// Number of times execution resumed through the ROM wake stub, i.e. how many
-/// times the CPU power domain was actually powered down and restored. A sleep
-/// that was rejected or where the CPU stayed powered does *not* increment this.
+/// Caller-owned backing store for TOP-domain system-peripheral retention.
+///
+/// Re-exported here (alongside [`CpuRetentionMemory`]) because it is the second
+/// buffer required by
+/// [`RtcSleepConfig::with_top_power_down`](crate::rtc_cntl::sleep::RtcSleepConfig::with_top_power_down).
+#[instability::unstable]
+pub use crate::rtc_cntl::retention::SystemRetentionMemory;
+
+/// Incremented from the ROM wake stub, so only when the CPU domain was actually
+/// powered down and restored (a rejected or clock-gated sleep does not).
 static CPU_POWERDOWN_WAKES: AtomicU32 = AtomicU32::new(0);
 
-/// Returns how many times the CPU power domain has actually been powered down
-/// and successfully restored via the ROM wake stub.
-///
-/// This is primarily a diagnostic: if it increases across light sleeps then the
-/// CPU genuinely lost power (rather than the request being rejected or the CPU
-/// merely clock-gated).
+/// Number of times the CPU power domain was actually powered down and restored
+/// via the ROM wake stub. A diagnostic: if it rises across light sleeps, the CPU
+/// genuinely lost power rather than merely clock-gating.
 #[instability::unstable]
 pub fn cpu_power_down_wake_count() -> u32 {
     CPU_POWERDOWN_WAKES.load(Ordering::Relaxed)
@@ -92,11 +81,8 @@ const CRITICAL_FRAME_WORDS: usize = 39;
 /// the wake stub.
 const PMUFUNC_WORD: usize = 38;
 
-/// Backing store for the critical frame. Lives in internal RAM (`.bss`), which
-/// is retained while only the CPU domain is powered down.
-static mut CRITICAL_FRAME: [u32; CRITICAL_FRAME_WORDS] = [0; CRITICAL_FRAME_WORDS];
-
-/// Pointer the assembly reads to find [`CRITICAL_FRAME`]. Set before sleeping.
+/// Pointer the assembly reads to find the critical frame (the caller's
+/// [`CpuRetentionMemory::critical`] array). Set before every sleep.
 static mut RV_CORE_CRITICAL_REGS_FRAME: *mut u32 = core::ptr::null_mut();
 
 unsafe extern "C" {
@@ -326,12 +312,12 @@ unsafe fn write_csr<const CSR: u32>(value: u32) {
 /// user GPIO) work without assembler support.
 macro_rules! noncritical_csrs {
     ($($name:ident = $csr:literal),+ $(,)?) => {
-        /// Backing store for the non-critical CSR values, one `u32` slot each.
-        static mut NONCRITICAL_FRAME: [u32; [$($csr),+].len()] = [0; [$($csr),+].len()];
+        /// Number of non-critical CSR slots (one `u32` each). Sizes the
+        /// `noncritical` field of [`CpuRetentionMemory`].
+        const NONCRITICAL_WORDS: usize = [$($csr),+].len();
 
         #[ram]
-        fn save_noncritical() {
-            let buf = addr_of_mut!(NONCRITICAL_FRAME) as *mut u32;
+        fn save_noncritical(buf: *mut u32) {
             let mut i = 0usize;
             $(
                 unsafe { buf.add(i).write(read_csr::<$csr>()); }
@@ -341,8 +327,7 @@ macro_rules! noncritical_csrs {
         }
 
         #[ram]
-        fn restore_noncritical() {
-            let buf = addr_of_mut!(NONCRITICAL_FRAME) as *const u32;
+        fn restore_noncritical(buf: *const u32) {
             let mut i = 0usize;
             $(
                 unsafe { write_csr::<$csr>(buf.add(i).read()); }
@@ -448,11 +433,6 @@ const CLINT_REGIONS: [Region; 2] = [
     Region { start: 0x2000_1C00, words: 6 },
 ];
 
-static mut INTPRI_FRAME: [u32; total_words(&INTPRI_REGIONS)] = [0; total_words(&INTPRI_REGIONS)];
-static mut CACHE_FRAME: [u32; total_words(&CACHE_REGIONS)] = [0; total_words(&CACHE_REGIONS)];
-static mut PLIC_FRAME: [u32; total_words(&PLIC_REGIONS)] = [0; total_words(&PLIC_REGIONS)];
-static mut CLINT_FRAME: [u32; total_words(&CLINT_REGIONS)] = [0; total_words(&CLINT_REGIONS)];
-
 #[ram]
 fn save_device_regs(regions: &[Region], buf: *mut u32) {
     let mut out = buf;
@@ -480,6 +460,59 @@ fn restore_device_regs(regions: &[Region], buf: *const u32) {
                 addr = addr.add(1);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Caller-owned retention storage
+// ---------------------------------------------------------------------------
+
+/// Backing storage (~1 KiB) for CPU power-down register retention.
+///
+/// The caller owns it and opts in by passing it to
+/// [`RtcSleepConfig::with_cpu_power_down`] (or
+/// [`RtcSleepConfig::with_top_power_down`], which also powers the CPU down on
+/// the C6). It must stay valid for every sleep it is used with, so it is
+/// typically placed in a `static`.
+///
+/// [`RtcSleepConfig::with_cpu_power_down`]: crate::rtc_cntl::sleep::RtcSleepConfig::with_cpu_power_down
+/// [`RtcSleepConfig::with_top_power_down`]: crate::rtc_cntl::sleep::RtcSleepConfig::with_top_power_down
+#[instability::unstable]
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(C, align(4))]
+pub struct CpuRetentionMemory {
+    /// Critical frame: general-purpose registers + the machine CSRs the
+    /// assembly save/restore addresses by byte offset.
+    critical: [u32; CRITICAL_FRAME_WORDS],
+    /// Non-critical CSRs.
+    noncritical: [u32; NONCRITICAL_WORDS],
+    /// CPU-domain device registers.
+    intpri: [u32; total_words(&INTPRI_REGIONS)],
+    cache: [u32; total_words(&CACHE_REGIONS)],
+    plic: [u32; total_words(&PLIC_REGIONS)],
+    clint: [u32; total_words(&CLINT_REGIONS)],
+}
+
+impl CpuRetentionMemory {
+    /// Create a new, zeroed CPU retention buffer.
+    #[instability::unstable]
+    pub const fn new() -> Self {
+        Self {
+            critical: [0; CRITICAL_FRAME_WORDS],
+            noncritical: [0; NONCRITICAL_WORDS],
+            intpri: [0; total_words(&INTPRI_REGIONS)],
+            cache: [0; total_words(&CACHE_REGIONS)],
+            plic: [0; total_words(&PLIC_REGIONS)],
+            clint: [0; total_words(&CLINT_REGIONS)],
+        }
+    }
+}
+
+#[instability::unstable]
+impl Default for CpuRetentionMemory {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -556,29 +589,30 @@ fn do_cpu_retention() {
 ///
 /// Must be called with the PMU already configured for a `pd_cpu` light sleep and
 /// with the system in a state where stopping the CPU is safe (interrupts are
-/// disabled internally for the duration).
+/// disabled internally for the duration). `mem` must stay valid until this
+/// function returns (i.e. across the sleep).
 #[ram]
-pub(crate) unsafe fn sleep_with_cpu_retention() {
+pub(crate) unsafe fn sleep_with_cpu_retention(mem: &mut CpuRetentionMemory) {
     unsafe {
-        RV_CORE_CRITICAL_REGS_FRAME = addr_of_mut!(CRITICAL_FRAME) as *mut u32;
+        RV_CORE_CRITICAL_REGS_FRAME = mem.critical.as_mut_ptr();
 
         let mstatus = save_mstatus_and_disable_int();
 
-        save_device_regs(&PLIC_REGIONS, addr_of_mut!(PLIC_FRAME) as *mut u32);
-        save_device_regs(&CLINT_REGIONS, addr_of_mut!(CLINT_FRAME) as *mut u32);
-        save_device_regs(&INTPRI_REGIONS, addr_of_mut!(INTPRI_FRAME) as *mut u32);
-        save_device_regs(&CACHE_REGIONS, addr_of_mut!(CACHE_FRAME) as *mut u32);
-        save_noncritical();
+        save_device_regs(&PLIC_REGIONS, mem.plic.as_mut_ptr());
+        save_device_regs(&CLINT_REGIONS, mem.clint.as_mut_ptr());
+        save_device_regs(&INTPRI_REGIONS, mem.intpri.as_mut_ptr());
+        save_device_regs(&CACHE_REGIONS, mem.cache.as_mut_ptr());
+        save_noncritical(mem.noncritical.as_mut_ptr());
 
         do_cpu_retention();
 
         // Restored in the reverse order of saving. The cache configuration must
         // come back before we return to flash-resident code.
-        restore_noncritical();
-        restore_device_regs(&CACHE_REGIONS, addr_of_mut!(CACHE_FRAME) as *const u32);
-        restore_device_regs(&INTPRI_REGIONS, addr_of_mut!(INTPRI_FRAME) as *const u32);
-        restore_device_regs(&CLINT_REGIONS, addr_of_mut!(CLINT_FRAME) as *const u32);
-        restore_device_regs(&PLIC_REGIONS, addr_of_mut!(PLIC_FRAME) as *const u32);
+        restore_noncritical(mem.noncritical.as_ptr());
+        restore_device_regs(&CACHE_REGIONS, mem.cache.as_ptr());
+        restore_device_regs(&INTPRI_REGIONS, mem.intpri.as_ptr());
+        restore_device_regs(&CLINT_REGIONS, mem.clint.as_ptr());
+        restore_device_regs(&PLIC_REGIONS, mem.plic.as_ptr());
 
         restore_mstatus(mstatus);
     }

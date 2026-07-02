@@ -398,7 +398,7 @@ impl<'a> I2cSlaveFuture<'a> {
             regs,
             state,
             events,
-            _wake_lock: WakeLock::new(),
+            _wake_lock: WakeLock::new_top_domain(),
         }
     }
 }

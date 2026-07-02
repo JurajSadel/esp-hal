@@ -67,6 +67,9 @@ use low_level::{
     sync_regs,
 };
 
+#[cfg(esp32c6)]
+#[instability::unstable]
+pub use crate::rtc_cntl::retention::{PeripheralRetention, UartRetentionMemory};
 use crate::{
     Async,
     Blocking,
@@ -552,7 +555,7 @@ where
                 guard: rx_guard,
                 peri_clock_guard: peri_clock_guard.clone(),
                 // Receiving data continuously, the peripheral can't let the system sleep.
-                _wake_lock: WakeLock::new(),
+                _wake_lock: WakeLock::new_top_domain(),
                 reported_errors: config.rx.reported_errors,
             },
             tx: UartTx {
@@ -1848,6 +1851,32 @@ where
     fn regs(&self) -> &RegisterBlock {
         // `self.tx.uart` and `self.rx.uart` are the same
         self.tx.uart.info().regs()
+    }
+
+    /// Retain this UART's configuration registers across a `TOP`-domain
+    /// power-down during light sleep, using caller-provided memory.
+    ///
+    /// The PMU/regDMA engine backs the config registers up into the caller-owned
+    /// [`UartRetentionMemory`] on the way into sleep and restores them on wakeup.
+    /// Opting in also releases the `TOP` wake-lock the active UART holds, so a
+    /// `TOP` power-down can take effect (its state is saved/restored instead of
+    /// blocking the power-down).
+    ///
+    /// Retention lasts as long as the returned [`PeripheralRetention`] guard is
+    /// held. It borrows both this UART and `mem`, so both must outlive it (`mem`
+    /// is typically a `static` via `mk_static!`). The console/log UART is
+    /// retained automatically and does not need this.
+    #[cfg(esp32c6)]
+    #[instability::unstable]
+    pub fn with_retention_memory<'m>(
+        &'m self,
+        mem: &'m mut UartRetentionMemory,
+    ) -> PeripheralRetention<'m> {
+        // Tying the guard to `&self` keeps the driver's own `TOP` wake-lock alive
+        // (so releasing one count in `register_uart` can't underflow the domain
+        // counter) until retention is dropped.
+        let base = self.regs() as *const RegisterBlock as usize as u32;
+        crate::rtc_cntl::retention::register_uart(mem, base)
     }
 
     #[procmacros::doc_replace]

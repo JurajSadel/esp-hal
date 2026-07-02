@@ -124,6 +124,10 @@ use crate::{peripherals::RTC_TIMER, system::Cpu, time::Duration};
 #[cfg(sleep_driver_supported)]
 pub mod sleep;
 
+// Central bookkeeping for opt-in sleep register retention. C6-only for now.
+#[cfg(esp32c6)]
+pub(crate) mod sleep_retention;
+
 // regDMA/PAU-based register retention of the TOP power domain's peripherals
 // during light sleep. C6-only for now. Internal: driven automatically by the
 // sleep path when `pd_top` is requested.
@@ -779,6 +783,11 @@ cfg_select! {
 /// While at least one `WakeLock` is held, [`WakeLock::is_active`] returns `true`
 /// and the auto-lightsleep idle hook will not put the chip to sleep. The lock is
 /// released when the guard is dropped.
+///
+/// A wake-lock may additionally be scoped to a power domain, forbidding that
+/// domain from being powered down during light sleep (it degrades to
+/// clock-gating instead) so an active, un-retained peripheral can't lose its
+/// state. See the `sleep_retention` bookkeeping.
 #[cfg_attr(
     not(sleep_light_sleep),
     doc = r"
@@ -787,13 +796,49 @@ Note: This chip does not support automatic light sleep. On this chip, `WakeLock`
 )]
 #[instability::unstable]
 #[non_exhaustive]
-pub struct WakeLock;
+pub struct WakeLock {
+    // The domain this lock keeps powered, if scoped to one; `None` for a plain
+    // `new()` lock. C6-only, so absent (struct stays zero-sized) elsewhere.
+    #[cfg(esp32c6)]
+    domain: Option<sleep_retention::Domain>,
+}
 
 impl WakeLock {
     /// Acquires a wake lock, preventing automatic light sleep until it is dropped.
     pub fn new() -> Self {
         Self::acquire();
-        Self
+        Self {
+            #[cfg(esp32c6)]
+            domain: None,
+        }
+    }
+
+    /// Acquires a wake lock scoped to `domain`: in addition to inhibiting
+    /// automatic light sleep, it forbids `domain` from being powered down while
+    /// held (see [`sleep_retention::can_power_down`]).
+    #[cfg(esp32c6)]
+    pub(crate) fn new_for_domain(domain: sleep_retention::Domain) -> Self {
+        Self::acquire();
+        sleep_retention::acquire(domain);
+        Self {
+            domain: Some(domain),
+        }
+    }
+
+    /// Acquires a wake lock for a peripheral in the digital `TOP` power domain.
+    ///
+    /// On the C6 this is scoped to the `TOP` domain, so an explicit `TOP`
+    /// power-down degrades to clock-gating while the peripheral is active and
+    /// un-retained. Elsewhere it is equivalent to [`Self::new`].
+    pub(crate) fn new_top_domain() -> Self {
+        #[cfg(esp32c6)]
+        {
+            Self::new_for_domain(sleep_retention::Domain::Top)
+        }
+        #[cfg(not(esp32c6))]
+        {
+            Self::new()
+        }
     }
 
     /// Acquires a wake lock, preventing automatic light sleep.
@@ -830,6 +875,10 @@ impl WakeLock {
 #[instability::unstable]
 impl Clone for WakeLock {
     fn clone(&self) -> Self {
+        #[cfg(esp32c6)]
+        if let Some(domain) = self.domain {
+            return Self::new_for_domain(domain);
+        }
         Self::new()
     }
 }
@@ -844,5 +893,9 @@ impl Default for WakeLock {
 impl Drop for WakeLock {
     fn drop(&mut self) {
         Self::release();
+        #[cfg(esp32c6)]
+        if let Some(domain) = self.domain {
+            sleep_retention::release(domain);
+        }
     }
 }

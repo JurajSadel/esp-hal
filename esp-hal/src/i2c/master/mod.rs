@@ -153,6 +153,10 @@ mod low_level;
 pub use low_level::{AnyI2c, Instance};
 use low_level::{Driver, I2cClockGuard};
 
+#[cfg(esp32c6)]
+#[instability::unstable]
+pub use crate::rtc_cntl::retention::{I2cRetentionMemory, PeripheralRetention};
+
 const I2C_FIFO_SIZE: usize = property!("i2c_master.fifo_size");
 // Chunk writes/reads by this size
 const I2C_CHUNK_SIZE: usize = I2C_FIFO_SIZE - 1;
@@ -1036,6 +1040,27 @@ where
         // Timeout errors mean our hardware is (possibly) working when it gets reset. Clear the bus
         // in this case, to prevent leaving the I2C device mid-transfer.
         self.driver().reset_fsm(*error == Error::Timeout)
+    }
+
+    /// Retain this I2C's configuration registers across a `TOP`-domain
+    /// power-down during light sleep, using caller-provided memory.
+    ///
+    /// The PMU/regDMA engine backs the config registers up into the caller-owned
+    /// [`I2cRetentionMemory`] on the way into sleep and restores them on wakeup.
+    /// Retention lasts as long as the returned [`PeripheralRetention`] guard is
+    /// held; it borrows only `mem` (not the driver), so the bus stays usable
+    /// (`mem` is typically a `static` via `mk_static!`).
+    ///
+    /// An in-flight transaction keeps `TOP` powered via a transient wake-lock, so
+    /// a power-down only happens on an idle bus.
+    #[cfg(esp32c6)]
+    #[instability::unstable]
+    pub fn with_retention_memory<'m>(
+        &self,
+        mem: &'m mut I2cRetentionMemory,
+    ) -> PeripheralRetention<'m> {
+        let base = self.i2c.info().regs() as *const RegisterBlock as usize as u32;
+        crate::rtc_cntl::retention::register_i2c(mem, base)
     }
 
     #[procmacros::doc_replace]
