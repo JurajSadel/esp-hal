@@ -48,6 +48,10 @@ use embedded_hal_async::spi::SpiBus as SpiBusAsync;
 use enumset::EnumSetType;
 use low_level::{Driver, SpiWrapper};
 pub use low_level::{Info, Instance, QspiInstance, State};
+
+#[cfg(esp32c6)]
+#[instability::unstable]
+pub use crate::rtc_cntl::retention::{PeripheralRetention, SpiRetentionMemory};
 use procmacros::doc_replace;
 
 use super::{BitOrder, Error, Mode};
@@ -887,6 +891,27 @@ impl<'d, Dm> Spi<'d, Dm>
 where
     Dm: DriverMode,
 {
+    /// Retain this SPI's configuration registers across a `TOP`-domain
+    /// power-down during light sleep, using caller-provided memory.
+    ///
+    /// The PMU/regDMA engine backs the config registers up into the caller-owned
+    /// [`SpiRetentionMemory`] on the way into sleep and restores them on wakeup.
+    /// Retention lasts as long as the returned [`PeripheralRetention`] guard is
+    /// held; it borrows only `mem` (not the driver), so the bus stays usable
+    /// (`mem` is typically a `static` via `mk_static!`).
+    ///
+    /// An in-flight transfer keeps `TOP` powered, so a power-down only happens on
+    /// an idle bus.
+    #[cfg(esp32c6)]
+    #[instability::unstable]
+    pub fn with_retention_memory<'m>(
+        &self,
+        mem: &'m mut SpiRetentionMemory,
+    ) -> PeripheralRetention<'m> {
+        let base = self.driver().regs() as *const _ as usize as u32;
+        crate::rtc_cntl::retention::register_spi(mem, base)
+    }
+
     fn connect_sio_pin(&self, pin: interconnect::OutputSignal<'d>, n: usize) -> PinGuard {
         let in_signal = self.spi.info().sio_input(n);
         let out_signal = self.spi.info().sio_output(n);

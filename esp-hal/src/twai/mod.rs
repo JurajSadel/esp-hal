@@ -1682,7 +1682,7 @@ mod asynch {
                 twai,
                 frame,
                 in_flight: false,
-                _wake_lock: WakeLock::new(),
+                _wake_lock: WakeLock::new_top_domain(),
             }
         }
     }
