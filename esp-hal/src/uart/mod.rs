@@ -67,6 +67,11 @@ use low_level::{
     sync_regs,
 };
 
+#[cfg(not(esp32c6))]
+use crate::rtc_cntl::WakeLock;
+#[cfg(esp32c6)]
+#[instability::unstable]
+pub use crate::rtc_cntl::retention::UartRetentionMemory;
 use crate::{
     Async,
     Blocking,
@@ -85,7 +90,6 @@ use crate::{
     pac::uart0::RegisterBlock,
     private::DropGuard,
     ram,
-    rtc_cntl::WakeLock,
     soc::clocks::{self, ClockTree},
     system::PeripheralGuard,
 };
@@ -552,6 +556,9 @@ where
                 guard: rx_guard,
                 peri_clock_guard: peri_clock_guard.clone(),
                 // Receiving data continuously, the peripheral can't let the system sleep.
+                #[cfg(esp32c6)]
+                power: crate::rtc_cntl::retention::PowerManagement::new(),
+                #[cfg(not(esp32c6))]
                 _wake_lock: WakeLock::new(),
                 reported_errors: config.rx.reported_errors,
             },
@@ -610,7 +617,11 @@ pub struct UartRx<'d, Dm: DriverMode> {
     phantom: PhantomData<Dm>,
     guard: PeripheralGuard,
     peri_clock_guard: UartClockGuard<'d>,
+    // Active keeps `TOP` powered; `Uart::with_retention_memory` swaps to retained.
+    #[cfg(esp32c6)]
+    power: crate::rtc_cntl::retention::PowerManagement<'d, UartRetentionMemory>,
     // Receiving data continuously, the peripheral can't let the system sleep.
+    #[cfg(not(esp32c6))]
     _wake_lock: WakeLock,
     reported_errors: EnumSet<RxErrorKind>,
 }
@@ -1076,6 +1087,9 @@ impl<'d> UartRx<'d, Blocking> {
             phantom: PhantomData,
             guard: self.guard,
             peri_clock_guard: self.peri_clock_guard,
+            #[cfg(esp32c6)]
+            power: self.power,
+            #[cfg(not(esp32c6))]
             _wake_lock: self._wake_lock,
             reported_errors: self.reported_errors,
         }
@@ -1099,6 +1113,9 @@ impl<'d> UartRx<'d, Async> {
             phantom: PhantomData,
             guard: self.guard,
             peri_clock_guard: self.peri_clock_guard,
+            #[cfg(esp32c6)]
+            power: self.power,
+            #[cfg(not(esp32c6))]
             _wake_lock: self._wake_lock,
             reported_errors: self.reported_errors,
         }
@@ -1848,6 +1865,18 @@ where
     fn regs(&self) -> &RegisterBlock {
         // `self.tx.uart` and `self.rx.uart` are the same
         self.tx.uart.info().regs()
+    }
+
+    /// Retain this UART's config registers in `mem` across a `TOP` power-down in
+    /// light sleep. While active the driver keeps `TOP` powered; this drops that
+    /// lock and lets regDMA save/restore the config so `TOP` can power down. The
+    /// console/log UART is retained automatically and does not need this.
+    #[cfg(esp32c6)]
+    #[instability::unstable]
+    pub fn with_retention_memory(mut self, mem: &'d mut UartRetentionMemory) -> Self {
+        let base = self.regs() as *const RegisterBlock as usize as u32;
+        self.rx.power.retain(mem, base);
+        self
     }
 
     #[procmacros::doc_replace]
