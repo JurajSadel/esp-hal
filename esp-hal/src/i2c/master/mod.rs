@@ -687,8 +687,10 @@ pub struct I2c<'d, Dm: DriverMode> {
     // Active peripherals keep the `TOP` power domain up; opting into retention
     // (see `I2c::with_retention_memory`) swaps this for the retained state.
     #[cfg(esp32c6)]
-    power:
-        crate::rtc_cntl::retention::PowerManagement<'d, crate::rtc_cntl::retention::I2cRetentionMemory>,
+    power: crate::rtc_cntl::retention::PowerManagement<
+        'd,
+        crate::rtc_cntl::retention::I2cRetentionMemory,
+    >,
 }
 
 #[derive(Debug)]

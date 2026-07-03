@@ -48,13 +48,12 @@ use embedded_hal_async::spi::SpiBus as SpiBusAsync;
 use enumset::EnumSetType;
 use low_level::{Driver, SpiWrapper};
 pub use low_level::{Info, Instance, QspiInstance, State};
-
-#[cfg(esp32c6)]
-#[instability::unstable]
-pub use crate::rtc_cntl::retention::SpiRetentionMemory;
 use procmacros::doc_replace;
 
 use super::{BitOrder, Error, Mode};
+#[cfg(esp32c6)]
+#[instability::unstable]
+pub use crate::rtc_cntl::retention::SpiRetentionMemory;
 use crate::{
     Async,
     Blocking,

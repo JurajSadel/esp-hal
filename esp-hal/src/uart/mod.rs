@@ -67,6 +67,8 @@ use low_level::{
     sync_regs,
 };
 
+#[cfg(not(esp32c6))]
+use crate::rtc_cntl::WakeLock;
 #[cfg(esp32c6)]
 #[instability::unstable]
 pub use crate::rtc_cntl::retention::UartRetentionMemory;
@@ -91,8 +93,6 @@ use crate::{
     soc::clocks::{self, ClockTree},
     system::PeripheralGuard,
 };
-#[cfg(not(esp32c6))]
-use crate::rtc_cntl::WakeLock;
 
 crate::any_peripheral! {
     /// Any UART peripheral.

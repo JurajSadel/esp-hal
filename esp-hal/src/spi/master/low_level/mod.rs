@@ -50,8 +50,10 @@ pub(super) struct SpiWrapper<'d> {
     // Active peripherals keep the `TOP` power domain up; opting into retention
     // (see `Spi::with_retention_memory`) swaps this for the retained state.
     #[cfg(esp32c6)]
-    pub(super) power:
-        crate::rtc_cntl::retention::PowerManagement<'d, crate::rtc_cntl::retention::SpiRetentionMemory>,
+    pub(super) power: crate::rtc_cntl::retention::PowerManagement<
+        'd,
+        crate::rtc_cntl::retention::SpiRetentionMemory,
+    >,
 }
 
 impl<'d> SpiWrapper<'d> {
