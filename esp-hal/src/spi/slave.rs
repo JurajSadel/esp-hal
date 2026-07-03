@@ -379,7 +379,7 @@ pub mod dma {
                 dma_buf: ManuallyDrop::new(dma_buf),
                 has_rx,
                 has_tx,
-                _wake_lock: WakeLock::new_top_domain(),
+                _wake_lock: WakeLock::new(),
             }
         }
 

@@ -56,7 +56,7 @@ impl<'a> I2cFuture<'a> {
             driver,
             deadline,
             finished: false,
-            _wake_lock: WakeLock::new_top_domain(),
+            _wake_lock: WakeLock::new(),
         }
     }
 

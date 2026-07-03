@@ -154,7 +154,7 @@ use low_level::{Driver, I2cClockGuard};
 
 #[cfg(esp32c6)]
 #[instability::unstable]
-pub use crate::rtc_cntl::retention::{I2cRetentionMemory, PeripheralRetention};
+pub use crate::rtc_cntl::retention::I2cRetentionMemory;
 
 const I2C_FIFO_SIZE: usize = property!("i2c_master.fifo_size");
 // Chunk writes/reads by this size
@@ -684,6 +684,11 @@ pub struct I2c<'d, Dm: DriverMode> {
     guard: PeripheralGuard,
     clock_guard: I2cClockGuard<'d>,
     config: DriverConfig,
+    // Active peripherals keep the `TOP` power domain up; opting into retention
+    // (see `I2c::with_retention_memory`) swaps this for the retained state.
+    #[cfg(esp32c6)]
+    power:
+        crate::rtc_cntl::retention::PowerManagement<'d, crate::rtc_cntl::retention::I2cRetentionMemory>,
 }
 
 #[derive(Debug)]
@@ -732,6 +737,8 @@ impl<'d> I2c<'d, Blocking> {
                 sda_pin,
                 scl_pin,
             },
+            #[cfg(esp32c6)]
+            power: crate::rtc_cntl::retention::PowerManagement::new(),
         };
 
         // Make sure inputs are well-defined.
@@ -756,6 +763,8 @@ impl<'d> I2c<'d, Blocking> {
             guard: self.guard,
             clock_guard: self.clock_guard,
             config: self.config,
+            #[cfg(esp32c6)]
+            power: self.power,
         }
     }
 
@@ -849,6 +858,8 @@ impl<'d> I2c<'d, Async> {
             guard: self.guard,
             clock_guard: self.clock_guard,
             config: self.config,
+            #[cfg(esp32c6)]
+            power: self.power,
         }
     }
 
@@ -1038,22 +1049,18 @@ where
     /// Retain this I2C's configuration registers across a `TOP`-domain
     /// power-down during light sleep, using caller-provided memory.
     ///
-    /// The PMU/regDMA engine backs the config registers up into the caller-owned
-    /// [`I2cRetentionMemory`] on the way into sleep and restores them on wakeup.
-    /// Retention lasts as long as the returned [`PeripheralRetention`] guard is
-    /// held; it borrows only `mem` (not the driver), so the bus stays usable
-    /// (`mem` is typically a `static` via `mk_static!`).
-    ///
-    /// An in-flight transaction keeps `TOP` powered via a transient wake-lock, so
-    /// a power-down only happens on an idle bus.
+    /// While active, the driver keeps `TOP` powered so light sleep can't lose
+    /// its state. Calling this instead lets the PMU/regDMA engine back the
+    /// config registers up into the caller-owned [`I2cRetentionMemory`] on the
+    /// way into sleep and restore them on wakeup, so `TOP` can be powered down.
+    /// `mem` must outlive the driver, so it is typically a `static` via
+    /// `mk_static!`.
     #[cfg(esp32c6)]
     #[instability::unstable]
-    pub fn with_retention_memory<'m>(
-        &self,
-        mem: &'m mut I2cRetentionMemory,
-    ) -> PeripheralRetention<'m> {
+    pub fn with_retention_memory(mut self, mem: &'d mut I2cRetentionMemory) -> Self {
         let base = self.i2c.info().regs() as *const RegisterBlock as usize as u32;
-        crate::rtc_cntl::retention::register_i2c(mem, base)
+        self.power.retain(mem, base);
+        self
     }
 
     #[procmacros::doc_replace]

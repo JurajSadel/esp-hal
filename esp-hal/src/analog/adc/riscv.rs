@@ -676,7 +676,7 @@ impl<ADCX: Instance> AdcFuture<ADCX> {
     pub fn new(_self: &super::Adc<'_, ADCX, Async>) -> Self {
         Self {
             phantom: PhantomData,
-            _wake_lock: WakeLock::new_top_domain(),
+            _wake_lock: WakeLock::new(),
         }
     }
 }

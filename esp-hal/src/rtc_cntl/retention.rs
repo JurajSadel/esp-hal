@@ -24,12 +24,16 @@
 
 use core::{
     marker::PhantomData,
+    ptr::NonNull,
     sync::atomic::{Ordering, fence},
 };
 
-use esp_sync::RawMutex;
+use esp_sync::NonReentrantMutex;
 
-use crate::peripherals::{PAU, PCR, PMU};
+use crate::{
+    peripherals::{PAU, PCR, PMU},
+    rtc_cntl::WakeLock,
+};
 
 // Bit layout of `regdma_link_head_t` (see ESP-IDF `regdma.h`):
 // https://github.com/espressif/esp-idf/blob/v5.4/components/soc/include/soc/regdma.h#L114-L123
@@ -282,71 +286,81 @@ fn build_spi_seq(base: u32, nodes: &mut [RegdmaLink], storage: u32) {
     );
 }
 
-/// One opt-in peripheral's registration: a pointer to its caller-owned node
-/// array and the node count.
+/// A node in the intrusive registry of opt-in peripheral retention sequences.
 ///
-/// # Soundness
-///
-/// The pointer is only dereferenced while rebuilding the PAU chain in
-/// [`arm_link`], and the hardware only walks that chain during the `pd_top`
-/// sleep that just armed it. Three invariants keep this sound:
-///
-/// 1. [`enable_top_retention`] rebuilds the chain from the live registry before
-///    every sleep, so a deregistered entry is dropped before regDMA can walk it.
-/// 2. The owner registers via an RAII guard that borrows the backing memory and
-///    deregisters synchronously on drop, so a registered entry always points at
-///    live, borrow-frozen memory.
-/// 3. Arm -> sleep -> wake -> restore is one uninterruptible sequence on the
-///    single HP core, so no deregistration can interleave with it.
-#[derive(Clone, Copy)]
-struct RetentionEntry {
+/// One lives inside each peripheral's caller-owned retention memory, so any
+/// number of peripherals can register without a fixed-size table or allocation.
+/// The pointers are only dereferenced while rebuilding the PAU chain in
+/// [`arm_link`] (under [`REGISTRY`], on the single HP core), and only ever point
+/// at borrow-frozen caller memory that stays put until it is deregistered.
+pub(crate) struct RetentionNode {
+    next: Option<NonNull<RetentionNode>>,
     head: *mut RegdmaLink,
     len: usize,
 }
 
-/// Maximum number of peripherals that can opt into TOP-domain retention
-/// simultaneously (in addition to the always-retained `sys_periph` core set).
-const MAX_RETENTION_ENTRIES: usize = 8;
-
-static REGISTRY_LOCK: RawMutex = RawMutex::new();
-static mut REGISTRY: [Option<RetentionEntry>; MAX_RETENTION_ENTRIES] =
-    [None; MAX_RETENTION_ENTRIES];
-
-/// Register a caller-owned node sub-list to be appended to the TOP retention
-/// link on the next sleep. Returns a token to pass to [`deregister_nodes`], or
-/// `None` if the registry is full.
-///
-/// The `nodes` storage must remain valid and not move until it is deregistered;
-/// callers enforce this with an RAII guard that borrows the backing memory.
-fn register_nodes(nodes: &mut [RegdmaLink]) -> Option<usize> {
-    if nodes.is_empty() {
-        return None;
-    }
-    let entry = RetentionEntry {
-        head: nodes.as_mut_ptr(),
-        len: nodes.len(),
-    };
-    REGISTRY_LOCK.lock(|| {
-        // SAFETY: all access to REGISTRY is serialized by REGISTRY_LOCK.
-        let registry = unsafe { &mut *core::ptr::addr_of_mut!(REGISTRY) };
-        for (i, slot) in registry.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(entry);
-                return Some(i);
-            }
+impl RetentionNode {
+    const fn new() -> Self {
+        Self {
+            next: None,
+            head: core::ptr::null_mut(),
+            len: 0,
         }
-        None
-    })
+    }
 }
 
-/// Remove a registration previously made with [`register_nodes`] (e.g. via
-/// [`register_uart`]). Called from a peripheral's retention guard on drop.
-pub(crate) fn deregister_nodes(token: usize) {
-    REGISTRY_LOCK.lock(|| {
-        // SAFETY: all access to REGISTRY is serialized by REGISTRY_LOCK.
-        let registry = unsafe { &mut *core::ptr::addr_of_mut!(REGISTRY) };
-        registry[token] = None;
+impl core::fmt::Debug for RetentionNode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RetentionNode")
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for RetentionNode {
+    fn format(&self, fmt: defmt::Formatter<'_>) {
+        defmt::write!(fmt, "RetentionNode")
+    }
+}
+
+/// Head of the intrusive list of registered peripheral retention sequences.
+struct Registry(Option<NonNull<RetentionNode>>);
+
+// SAFETY: the pointers are only followed under the `REGISTRY` lock, and while
+// armed they point at borrow-frozen caller memory on the single HP core.
+unsafe impl Send for Registry {}
+
+static REGISTRY: NonReentrantMutex<Registry> = NonReentrantMutex::new(Registry(None));
+
+/// Push `node` (living inside a peripheral's caller-owned retention memory) onto
+/// the registry so [`arm_link`] chains its `nodes` on the next TOP power-down.
+fn register_node(node: &mut RetentionNode, nodes: &mut [RegdmaLink]) -> NonNull<RetentionNode> {
+    node.head = nodes.as_mut_ptr();
+    node.len = nodes.len();
+    REGISTRY.with(|registry| {
+        node.next = registry.0;
+        registry.0 = Some(NonNull::from(&mut *node));
     });
+    NonNull::from(node)
+}
+
+/// Remove a registration previously made with [`register_node`].
+fn deregister_node(node: &mut RetentionNode) {
+    let target = NonNull::from(&mut *node);
+    REGISTRY.with(|registry| {
+        let mut link: *mut Option<NonNull<RetentionNode>> = &mut registry.0;
+        // SAFETY: every pointer in the list points at a live, registered node;
+        // the walk only follows `next` links until it reaches `target`.
+        unsafe {
+            while let Some(current) = *link {
+                if current == target {
+                    *link = (*current.as_ptr()).next;
+                    break;
+                }
+                link = &raw mut (*current.as_ptr()).next;
+            }
+        }
+    });
+    node.next = None;
 }
 
 /// Chain a slice of nodes into a linked list without terminating it: each node
@@ -369,15 +383,17 @@ fn arm_link(core: &mut [RegdmaLink]) -> u32 {
     let head = core[0].addr();
     let mut tail = link_internal(core);
 
-    REGISTRY_LOCK.lock(|| {
-        // SAFETY: all access to REGISTRY is serialized by REGISTRY_LOCK.
-        let registry = unsafe { &*core::ptr::addr_of!(REGISTRY) };
-        for entry in registry.iter().flatten() {
-            // SAFETY: a registered entry points at a live, borrow-frozen
-            // caller-owned node array of `len` nodes (see `register_nodes`); it
-            // is distinct from `core` and from every other entry, so no aliasing
-            // `&mut` is formed.
-            let seg = unsafe { core::slice::from_raw_parts_mut(entry.head, entry.len) };
+    REGISTRY.with(|registry| {
+        let mut current = registry.0;
+        while let Some(node) = current {
+            // SAFETY: a registered node points at a live, borrow-frozen
+            // caller-owned array of `len` nodes, distinct from `core` and from
+            // every other entry, so no aliasing `&mut` is formed.
+            let (seg_head, seg_len, next) = unsafe {
+                let node = node.as_ref();
+                (node.head, node.len, node.next)
+            };
+            let seg = unsafe { core::slice::from_raw_parts_mut(seg_head, seg_len) };
             // SAFETY: `tail` is the last node of the previous segment, still
             // owned exclusively here.
             unsafe {
@@ -385,6 +401,7 @@ fn arm_link(core: &mut [RegdmaLink]) -> u32 {
                 (*tail).head &= !HEAD_EOF_BIT;
             }
             tail = link_internal(seg);
+            current = next;
         }
     });
 
@@ -401,17 +418,17 @@ fn arm_link(core: &mut [RegdmaLink]) -> u32 {
 ///
 /// Each peripheral gets its own named type sized to exactly what it needs (its
 /// retention link `nodes` plus the `buf` its registers are backed up into), so
-/// you only pay RAM for the peripherals you actually retain. The types share the
-/// same shape and differ only in the two sizes and their docs, so they are
-/// generated from one template instead of being hand-duplicated.
+/// you only pay RAM for the peripherals you actually retain. `$build` is the
+/// per-peripheral sequence builder used when the memory is registered.
 macro_rules! peripheral_retention_memory {
-    ($name:ident, $nodes:expr, $words:expr, $doc:expr) => {
+    ($name:ident, $nodes:expr, $words:expr, $build:path, $doc:expr) => {
         #[doc = $doc]
         #[instability::unstable]
         #[derive(Debug)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         #[repr(C, align(4))]
         pub struct $name {
+            node: RetentionNode,
             nodes: [RegdmaLink; $nodes],
             buf: [u32; $words],
         }
@@ -428,9 +445,18 @@ macro_rules! peripheral_retention_memory {
             #[instability::unstable]
             pub const fn new() -> Self {
                 Self {
+                    node: RetentionNode::new(),
                     nodes: [RegdmaLink::EMPTY; $nodes],
                     buf: [0; $words],
                 }
+            }
+        }
+
+        impl RetentionMemory for $name {
+            fn register(&mut self, base: u32) -> NonNull<RetentionNode> {
+                let storage = self.buf.as_mut_ptr() as u32;
+                $build(base, &mut self.nodes, storage);
+                register_node(&mut self.node, &mut self.nodes)
             }
         }
     };
@@ -440,6 +466,7 @@ peripheral_retention_memory!(
     UartRetentionMemory,
     UART_NODE_COUNT,
     UART_RETENTION_REGS_CNT as usize,
+    build_uart_seq,
     "Caller-owned backing store that retains one UART peripheral's configuration \
 registers across a `TOP`-domain power-down during light sleep. Handed to the \
 driver via [`Uart::with_retention_memory`](crate::uart::Uart::with_retention_memory); \
@@ -450,6 +477,7 @@ peripheral_retention_memory!(
     I2cRetentionMemory,
     I2C_NODE_COUNT,
     I2C_RETENTION_REGS_CNT as usize,
+    build_i2c_seq,
     "Caller-owned backing store that retains one I2C peripheral's configuration \
 registers across a `TOP`-domain power-down. Handed to the driver via \
 [`I2c::with_retention_memory`](crate::i2c::master::I2c::with_retention_memory). \
@@ -460,105 +488,82 @@ peripheral_retention_memory!(
     SpiRetentionMemory,
     SPI_NODE_COUNT,
     SPI_RETENTION_REGS_CNT as usize,
+    build_spi_seq,
     "Caller-owned backing store that retains one SPI peripheral's configuration \
 registers across a `TOP`-domain power-down. Handed to the driver via \
 [`Spi::with_retention_memory`](crate::spi::master::Spi::with_retention_memory). \
 See [`UartRetentionMemory`]."
 );
 
-/// RAII guard returned by a driver's `with_retention_memory`.
-///
-/// While held, that peripheral's configuration registers are retained across
-/// `TOP`-domain power-downs during light sleep; dropping it stops retaining them
-/// and frees the backing memory. It borrows the backing memory, so that memory
-/// cannot move or be reused while retention is active.
-///
-/// One guard type serves every peripheral. A UART additionally hands its active
-/// `TOP` wake-lock over to regDMA while retained and takes it back on drop; other
-/// peripherals only hold a wake-lock during an in-flight transfer, so their guard
-/// leaves the bus usable.
-#[instability::unstable]
-#[derive(Debug)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[must_use = "dropping the guard stops retaining the peripheral's registers"]
-pub struct PeripheralRetention<'m> {
-    // `None` if the registry was full when opting in, in which case the
-    // peripheral is simply not retained and the guard is a no-op.
-    token: Option<usize>,
-    // Whether to re-acquire a `TOP` wake-lock on drop (UART only).
-    readd_top_wakelock: bool,
-    _mem: PhantomData<&'m mut ()>,
+/// A peripheral's caller-owned retention memory that can be registered for
+/// TOP-domain retention. Implemented by the generated `*RetentionMemory` types.
+pub(crate) trait RetentionMemory {
+    /// Build this peripheral's retention sequence for the instance at `base` and
+    /// register it, returning a handle to its registry node.
+    fn register(&mut self, base: u32) -> NonNull<RetentionNode>;
 }
 
-#[instability::unstable]
-impl Drop for PeripheralRetention<'_> {
+/// A `TOP`-domain peripheral driver's power-management state.
+///
+/// The peripheral is either active and holding a [`WakeLock`] (which inhibits
+/// automatic light sleep so it can't lose state), or opted into retention: it
+/// drops the wake-lock and lets regDMA save/restore its configuration across a
+/// `TOP` power-down instead, using caller-owned memory borrowed for `'d`.
+/// Drivers store this directly, so the user never juggles a separate guard.
+pub(crate) enum PowerManagement<'d, M: RetentionMemory> {
+    /// Active, not retained: the held wake-lock keeps `TOP` powered.
+    WakeLock(WakeLock),
+    /// Retained: `node` points into the caller-owned memory borrowed for `'d`.
+    Retain {
+        node: NonNull<RetentionNode>,
+        _mem: PhantomData<&'d mut M>,
+    },
+}
+
+impl<'d, M: RetentionMemory> PowerManagement<'d, M> {
+    /// Active state: hold a wake-lock so light sleep can't power the peripheral
+    /// down while it is in use and un-retained.
+    pub(crate) fn new() -> Self {
+        Self::WakeLock(WakeLock::new())
+    }
+
+    /// Opt into retention: build and register `mem` for the instance at `base`,
+    /// dropping the wake-lock so a `TOP` power-down can take effect.
+    pub(crate) fn retain(&mut self, mem: &'d mut M, base: u32) {
+        let node = mem.register(base);
+        *self = Self::Retain {
+            node,
+            _mem: PhantomData,
+        };
+    }
+}
+
+impl<M: RetentionMemory> Drop for PowerManagement<'_, M> {
     fn drop(&mut self) {
-        if let Some(token) = self.token {
-            deregister_nodes(token);
-            if self.readd_top_wakelock {
-                // No longer retained, so the peripheral keeps `TOP` powered
-                // again. Balances the release in `register_uart`.
-                crate::rtc_cntl::sleep_retention::acquire(
-                    crate::rtc_cntl::sleep_retention::Domain::Top,
-                );
-            }
+        if let Self::Retain { node, .. } = self {
+            // SAFETY: the node lives in caller memory borrowed for `'d`, which
+            // outlives `self`, so it is still valid to unlink here.
+            unsafe { deregister_node(node.as_mut()) };
         }
     }
 }
 
-/// Build `nodes` for the peripheral at `base` (via `build`, backing its
-/// registers into `buf_ptr`) and register the sequence for the next TOP-domain
-/// power-down. Shared by every peripheral's `register_*` wrapper.
-fn register_peripheral(
-    nodes: &mut [RegdmaLink],
-    buf_ptr: u32,
-    base: u32,
-    build: fn(u32, &mut [RegdmaLink], u32),
-) -> Option<usize> {
-    build(base, nodes, buf_ptr);
-    register_nodes(nodes)
-}
-
-/// Register a UART's retention sequence and return its guard.
-///
-/// A live UART holds a `TOP` wake-lock; once retained that lock is handed over
-/// to regDMA - released here and re-acquired when the returned guard drops - so
-/// the power-down can take effect. A full registry yields a no-op guard.
-pub(crate) fn register_uart(mem: &mut UartRetentionMemory, base: u32) -> PeripheralRetention<'_> {
-    let buf_ptr = mem.buf.as_mut_ptr() as u32;
-    let token = register_peripheral(&mut mem.nodes, buf_ptr, base, build_uart_seq);
-    let readd_top_wakelock = token.is_some();
-    if readd_top_wakelock {
-        crate::rtc_cntl::sleep_retention::release(crate::rtc_cntl::sleep_retention::Domain::Top);
-    }
-    PeripheralRetention {
-        token,
-        readd_top_wakelock,
-        _mem: PhantomData,
+impl<M: RetentionMemory> core::fmt::Debug for PowerManagement<'_, M> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::WakeLock(_) => f.write_str("PowerManagement::WakeLock"),
+            Self::Retain { .. } => f.write_str("PowerManagement::Retain"),
+        }
     }
 }
 
-/// Register an I2C's retention sequence and return its guard. Unlike a UART an
-/// idle I2C holds no `TOP` wake-lock, so there is none to hand over.
-pub(crate) fn register_i2c(mem: &mut I2cRetentionMemory, base: u32) -> PeripheralRetention<'_> {
-    let buf_ptr = mem.buf.as_mut_ptr() as u32;
-    let token = register_peripheral(&mut mem.nodes, buf_ptr, base, build_i2c_seq);
-    PeripheralRetention {
-        token,
-        readd_top_wakelock: false,
-        _mem: PhantomData,
-    }
-}
-
-/// Register an SPI's retention sequence and return its guard (see
-/// [`register_i2c`]).
-pub(crate) fn register_spi(mem: &mut SpiRetentionMemory, base: u32) -> PeripheralRetention<'_> {
-    let buf_ptr = mem.buf.as_mut_ptr() as u32;
-    let token = register_peripheral(&mut mem.nodes, buf_ptr, base, build_spi_seq);
-    PeripheralRetention {
-        token,
-        readd_top_wakelock: false,
-        _mem: PhantomData,
+#[cfg(feature = "defmt")]
+impl<M: RetentionMemory> defmt::Format for PowerManagement<'_, M> {
+    fn format(&self, fmt: defmt::Formatter<'_>) {
+        match self {
+            Self::WakeLock(_) => defmt::write!(fmt, "PowerManagement::WakeLock"),
+            Self::Retain { .. } => defmt::write!(fmt, "PowerManagement::Retain"),
+        }
     }
 }
 

@@ -165,7 +165,7 @@ where
         Self {
             peripheral,
             phantom: PhantomData,
-            wake_lock: WakeLock::new_top_domain(),
+            wake_lock: WakeLock::new(),
         }
     }
 
@@ -244,7 +244,7 @@ where
         Self {
             peripheral,
             phantom: PhantomData,
-            wake_lock: WakeLock::new_top_domain(),
+            wake_lock: WakeLock::new(),
         }
     }
 

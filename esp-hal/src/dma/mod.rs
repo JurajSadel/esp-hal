@@ -1540,7 +1540,7 @@ pub(crate) mod asynch {
                 tx,
                 success_interrupts: enum_set!(DmaTxInterrupt::TotalEof),
                 failure_interrupts: enum_set!(DmaTxInterrupt::DescriptorError),
-                _wake_lock: WakeLock::new_top_domain(),
+                _wake_lock: WakeLock::new(),
             }
         }
 
@@ -1554,7 +1554,7 @@ pub(crate) mod asynch {
                 tx,
                 success_interrupts,
                 failure_interrupts,
-                _wake_lock: WakeLock::new_top_domain(),
+                _wake_lock: WakeLock::new(),
             }
         }
     }
@@ -1626,7 +1626,7 @@ pub(crate) mod asynch {
                         | DmaRxInterrupt::DescriptorEmpty
                         | DmaRxInterrupt::ErrorEof
                 ),
-                _wake_lock: WakeLock::new_top_domain(),
+                _wake_lock: WakeLock::new(),
             }
         }
 
@@ -1640,7 +1640,7 @@ pub(crate) mod asynch {
                 rx,
                 success_interrupts,
                 failure_interrupts,
-                _wake_lock: WakeLock::new_top_domain(),
+                _wake_lock: WakeLock::new(),
             }
         }
     }
