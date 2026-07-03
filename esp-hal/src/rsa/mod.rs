@@ -615,7 +615,7 @@ impl<'a, 'd> RsaFuture<'a, 'd> {
 
         Self {
             driver,
-            _wake_lock: WakeLock::new_top_domain(),
+            _wake_lock: WakeLock::new(),
         }
     }
 

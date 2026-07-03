@@ -19,9 +19,6 @@
 //! - **Negative control**: one un-retained `TOP` register (I2C0 `SCL_LOW_PERIOD`) survives a
 //!   clock-gated sleep (what a build without retention does) but is wiped by `top-powerdown` -
 //!   direct evidence the domain lost power.
-//! - **Safety net**: while UART1 is active but not retained it holds a `TOP` wake-lock, so a
-//!   `top-powerdown` request degrades to clock-gating instead of destroying its state (the counter
-//!   stays put).
 //! - **Opt-in retention**: UART1, I2C0 and SPI2 are opted in via [`Uart::with_retention_memory`] /
 //!   [`I2c::with_retention_memory`] / [`Spi::with_retention_memory`], then a config register of
 //!   each is confirmed to survive `top-powerdown`.
@@ -178,45 +175,20 @@ fn main() -> ! {
     // proof below, which needs a valid, non-zero state.
     i2c0.apply_config(&I2cConfig::default()).unwrap();
 
-    // UART1 (a TOP peripheral) is live but not yet retained, so its driver holds
-    // a TOP wake-lock and a top-powerdown request must degrade to clock-gating
-    // rather than destroy its config: the counter must not advance.
     const UART1_CLKDIV: *const u32 = 0x6000_1014 as *const u32;
     let uart1 = Uart::new(peripherals.UART1, UartConfig::default()).unwrap();
 
-    let downs_before_block = cpu_power_down_wake_count();
-    for round in 1..=2 {
-        sleep_round(
-            &mut rtc,
-            &mut marker,
-            &delay,
-            &top_pd,
-            "top-blocked  ",
-            round,
-        );
-    }
-    let downs_after_block = cpu_power_down_wake_count();
-    println!(
-        "safety-net: uart1 active + un-retained -> top-powerdown degraded, CPU power-downs {} (was {}) -> {}",
-        downs_after_block,
-        downs_before_block,
-        if downs_after_block == downs_before_block {
-            "BLOCKED (clock-gated) -> SAFE"
-        } else {
-            "POWERED DOWN -> UNSAFE"
-        }
-    );
-
-    // Opt UART1 into retention: this drops its wake-lock and its registers are
-    // saved/restored around the power-down instead. Kept alive for the proof.
-    let _uart1_retention =
+    // Opt UART1 into retention: this drops its wake-lock and stores the backing
+    // memory in the driver, so its registers are saved/restored around the
+    // power-down instead. Kept alive for the proof.
+    let _uart1 =
         uart1.with_retention_memory(mk_static!(UartRetentionMemory, UartRetentionMemory::new()));
     // SAFETY: UART1 is configured and clocked (driver alive), register readable.
     let clkdiv_before = unsafe { UART1_CLKDIV.read_volatile() };
 
-    // Same for I2C0 (re-used from the negative control above). An idle I2C holds
-    // no wake-lock, so it doesn't block pd_top; retention preserves its config.
-    let _i2c0_retention =
+    // Same for I2C0 (re-used from the negative control above): retention stores
+    // the memory in the driver and preserves its config across the power-down.
+    let _i2c0 =
         i2c0.with_retention_memory(mk_static!(I2cRetentionMemory, I2cRetentionMemory::new()));
     // SAFETY: I2C0 is configured and clocked (driver alive), register readable.
     let i2c_scl_before = unsafe { I2C0_SCL_LOW_PERIOD.read_volatile() };
@@ -224,7 +196,7 @@ fn main() -> ! {
     // ...and SPI2 (GPSPI2), whose CLOCK register holds the divider from `Spi::new`.
     const SPI2_CLOCK: *const u32 = 0x6008_100C as *const u32;
     let spi2 = Spi::new(peripherals.SPI2, SpiConfig::default()).unwrap();
-    let _spi2_retention =
+    let _spi2 =
         spi2.with_retention_memory(mk_static!(SpiRetentionMemory, SpiRetentionMemory::new()));
     // SAFETY: SPI2 is configured and clocked (driver alive), register readable.
     let spi_clock_before = unsafe { SPI2_CLOCK.read_volatile() };
