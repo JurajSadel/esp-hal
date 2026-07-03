@@ -791,9 +791,6 @@ mod sys_periph {
     /// (Re)build the SYS_PERIPH retention linked list into the caller-owned
     /// `nodes`/`buf` storage and return the node slice ready to be
     /// chained/triggered.
-    ///
-    /// Rebuilding on each call keeps the nodes' `next`/buffer pointers
-    /// self-consistent and is cheap (a few dozen writes).
     pub(super) fn build_link<'a>(
         nodes: &'a mut [RegdmaLink; NODE_COUNT],
         buf: &mut [u32; BUF_WORDS],
@@ -844,10 +841,6 @@ mod sys_periph {
         // LOAD registers and triggers a load. The counter value is read from the
         // VALUE_HI/LO registers but restored into the LOAD_HI/LO registers, so
         // those CONTINUOUS nodes use split backup/restore addresses.
-        //
-        // `alloc` reserves `len` words of buffer and returns their address; it
-        // captures only the (copyable) buffer base, leaving `nodes` free to
-        // index directly.
         let alloc = |len: u32, word: &mut usize| -> u32 {
             let mem = unsafe { buf_base.add(*word) } as u32;
             *word += len as usize;
