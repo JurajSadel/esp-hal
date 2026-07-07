@@ -448,8 +448,7 @@ fn restore_device_regs(regions: &[Region], buf: *const u32) {
 /// Backing storage (~1 KiB) for CPU power-down register retention.
 ///
 /// Caller-owned, opted into via [`RtcSleepConfig::with_cpu_power_down`] (or
-/// [`RtcSleepConfig::with_top_power_down`], which also powers the CPU down). It
-/// must stay valid for every sleep, so it is typically a `static`.
+/// [`RtcSleepConfig::with_top_power_down`], which also powers the CPU down).
 ///
 /// [`RtcSleepConfig::with_cpu_power_down`]: crate::rtc_cntl::sleep::RtcSleepConfig::with_cpu_power_down
 /// [`RtcSleepConfig::with_top_power_down`]: crate::rtc_cntl::sleep::RtcSleepConfig::with_top_power_down

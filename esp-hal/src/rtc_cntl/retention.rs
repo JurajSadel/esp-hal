@@ -513,11 +513,9 @@ impl<M: RetentionMemory> defmt::Format for PowerManagement<'_, M> {
 /// register set (PCR, interrupt matrix, HP system, TEE/APM, IO MUX, GPIO matrix,
 /// flash SPI mem, console UART and SysTimer).
 ///
-/// This is the core state regDMA must retain for the `TOP` domain to power down
-/// at all; the caller opts in via [`RtcSleepConfig::with_top_power_down`].
-/// Without it the `TOP` domain is only clock-gated. It must stay valid for every
-/// sleep, so it is typically a `static`. Individual peripherals opt into
-/// retaining their own config on top of this via `with_retention_memory`.
+/// The core state regDMA must retain for the `TOP` domain to power down at all;
+/// the caller opts in via [`RtcSleepConfig::with_top_power_down`]. Individual
+/// peripherals opt into retaining their own config via `with_retention_memory`.
 ///
 /// [`RtcSleepConfig::with_top_power_down`]: crate::rtc_cntl::sleep::RtcSleepConfig::with_top_power_down
 #[instability::unstable]

@@ -886,12 +886,9 @@ impl<'d, Dm> Spi<'d, Dm>
 where
     Dm: DriverMode,
 {
-    /// Retain this SPI's config registers across a `TOP` power-down in light
-    /// sleep, using `mem` (which must outlive the driver, so typically a
-    /// `static` via `mk_static!`).
-    ///
-    /// While active the driver keeps `TOP` powered; this instead drops that lock
-    /// and lets regDMA save/restore the config, so `TOP` can be powered down.
+    /// Retain this SPI's config registers in `mem` across a `TOP` power-down in
+    /// light sleep. While active the driver keeps `TOP` powered; this drops that
+    /// lock and lets regDMA save/restore the config so `TOP` can power down.
     #[cfg(esp32c6)]
     #[instability::unstable]
     pub fn with_retention_memory(mut self, mem: &'d mut SpiRetentionMemory) -> Self {

@@ -1867,12 +1867,9 @@ where
         self.tx.uart.info().regs()
     }
 
-    /// Retain this UART's config registers across a `TOP` power-down in light
-    /// sleep, using `mem` (which must outlive the driver, so typically a
-    /// `static` via `mk_static!`).
-    ///
-    /// While active the driver keeps `TOP` powered; this instead drops that lock
-    /// and lets regDMA save/restore the config, so `TOP` can be powered down. The
+    /// Retain this UART's config registers in `mem` across a `TOP` power-down in
+    /// light sleep. While active the driver keeps `TOP` powered; this drops that
+    /// lock and lets regDMA save/restore the config so `TOP` can power down. The
     /// console/log UART is retained automatically and does not need this.
     #[cfg(esp32c6)]
     #[instability::unstable]

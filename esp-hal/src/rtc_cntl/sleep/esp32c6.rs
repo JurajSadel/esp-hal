@@ -756,9 +756,9 @@ impl RtcSleepConfig {
     /// Power down the CPU power domain during light sleep.
     ///
     /// The CPU state is saved/restored in software (not regDMA) into the caller's
-    /// [`CpuRetentionMemory`] (~1 KiB), which must outlive every sleep. No effect
-    /// on deep sleep. See [`cpu_retention::cpu_power_down_wake_count`] to confirm
-    /// the domain lost power.
+    /// [`CpuRetentionMemory`]. No effect on deep sleep. See
+    /// [`cpu_retention::cpu_power_down_wake_count`] to confirm the domain lost
+    /// power.
     ///
     /// [`CpuRetentionMemory`]: crate::rtc_cntl::cpu_retention::CpuRetentionMemory
     /// [`cpu_retention::cpu_power_down_wake_count`]: crate::rtc_cntl::cpu_retention::cpu_power_down_wake_count

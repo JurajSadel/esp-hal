@@ -1054,12 +1054,9 @@ where
         self.driver().reset_fsm(*error == Error::Timeout)
     }
 
-    /// Retain this I2C's config registers across a `TOP` power-down in light
-    /// sleep, using `mem` (which must outlive the driver, so typically a
-    /// `static` via `mk_static!`).
-    ///
-    /// While active the driver keeps `TOP` powered; this instead drops that lock
-    /// and lets regDMA save/restore the config, so `TOP` can be powered down.
+    /// Retain this I2C's config registers in `mem` across a `TOP` power-down in
+    /// light sleep. While active the driver keeps `TOP` powered; this drops that
+    /// lock and lets regDMA save/restore the config so `TOP` can power down.
     #[cfg(esp32c6)]
     #[instability::unstable]
     pub fn with_retention_memory(mut self, mem: &'d mut I2cRetentionMemory) -> Self {
