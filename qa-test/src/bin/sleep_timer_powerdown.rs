@@ -19,6 +19,9 @@
 //! - **Negative control**: one un-retained `TOP` register (I2C0 `SCL_LOW_PERIOD`) survives a
 //!   clock-gated sleep (what a build without retention does) but is wiped by `top-powerdown` -
 //!   direct evidence the domain lost power.
+//! - **Safety net**: while UART1 is active but not retained it holds a `TOP` power-domain lock, so
+//!   a `top-powerdown` request degrades to clock-gating (sleep still happens, `TOP` stays powered)
+//!   instead of destroying its state (the counter stays put).
 //! - **Opt-in retention**: UART1, I2C0 and SPI2 are opted in via [`Uart::with_retention_memory`] /
 //!   [`I2c::with_retention_memory`] / [`Spi::with_retention_memory`], then a config register of
 //!   each is confirmed to survive `top-powerdown`.
@@ -175,10 +178,36 @@ fn main() -> ! {
     // proof below, which needs a valid, non-zero state.
     i2c0.apply_config(&I2cConfig::default()).unwrap();
 
+    // UART1 (a TOP peripheral) is live but not yet retained, so its driver holds
+    // a TOP power-domain lock and a top-powerdown request must degrade to
+    // clock-gating rather than destroy its config: the counter must not advance.
     const UART1_CLKDIV: *const u32 = 0x6000_1014 as *const u32;
     let uart1 = Uart::new(peripherals.UART1, UartConfig::default()).unwrap();
 
-    // Opt UART1 into retention: this drops its wake-lock and stores the backing
+    let downs_before_block = cpu_power_down_wake_count();
+    for round in 1..=2 {
+        sleep_round(
+            &mut rtc,
+            &mut marker,
+            &delay,
+            &top_pd,
+            "top-blocked  ",
+            round,
+        );
+    }
+    let downs_after_block = cpu_power_down_wake_count();
+    println!(
+        "safety-net: uart1 active + un-retained -> top-powerdown degraded, CPU power-downs {} (was {}) -> {}",
+        downs_after_block,
+        downs_before_block,
+        if downs_after_block == downs_before_block {
+            "BLOCKED (clock-gated) -> SAFE"
+        } else {
+            "POWERED DOWN -> UNSAFE"
+        }
+    );
+
+    // Opt UART1 into retention: this drops its power-domain lock and stores the backing
     // memory in the driver, so its registers are saved/restored around the
     // power-down instead. Kept alive for the proof.
     let _uart1 =

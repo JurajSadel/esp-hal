@@ -32,7 +32,7 @@ use esp_sync::NonReentrantMutex;
 
 use crate::{
     peripherals::{PAU, PCR, PMU},
-    rtc_cntl::WakeLock,
+    rtc_cntl::power_domain::{Domain, PowerDomainLock},
 };
 
 // Bit layout of `regdma_link_head_t` (see ESP-IDF `regdma.h`):
@@ -505,14 +505,15 @@ pub(crate) trait RetentionMemory {
 
 /// A `TOP`-domain peripheral driver's power-management state.
 ///
-/// The peripheral is either active and holding a [`WakeLock`] (which inhibits
-/// automatic light sleep so it can't lose state), or opted into retention: it
-/// drops the wake-lock and lets regDMA save/restore its configuration across a
-/// `TOP` power-down instead, using caller-owned memory borrowed for `'d`.
-/// Drivers store this directly, so the user never juggles a separate guard.
+/// The peripheral is either active and holding a [`PowerDomainLock`] (which
+/// keeps `TOP` powered - degrading light sleep to clock-gating - so it can't
+/// lose state, without otherwise preventing sleep), or opted into retention: it
+/// drops the lock and lets regDMA save/restore its configuration across a `TOP`
+/// power-down instead, using caller-owned memory borrowed for `'d`. Drivers
+/// store this directly, so the user never juggles a separate guard.
 pub(crate) enum PowerManagement<'d, M: RetentionMemory> {
-    /// Active, not retained: the held wake-lock keeps `TOP` powered.
-    WakeLock(WakeLock),
+    /// Active, not retained: the held lock keeps `TOP` powered.
+    PowerDomainLock { _lock: PowerDomainLock },
     /// Retained: `node` points into the caller-owned memory borrowed for `'d`.
     Retain {
         node: NonNull<RetentionNode>,
@@ -521,14 +522,16 @@ pub(crate) enum PowerManagement<'d, M: RetentionMemory> {
 }
 
 impl<'d, M: RetentionMemory> PowerManagement<'d, M> {
-    /// Active state: hold a wake-lock so light sleep can't power the peripheral
-    /// down while it is in use and un-retained.
+    /// Active state: keep `TOP` powered so light sleep can't lose the
+    /// peripheral's state while it is in use and un-retained.
     pub(crate) fn new() -> Self {
-        Self::WakeLock(WakeLock::new())
+        Self::PowerDomainLock {
+            _lock: PowerDomainLock::new(Domain::Top),
+        }
     }
 
     /// Opt into retention: build and register `mem` for the instance at `base`,
-    /// dropping the wake-lock so a `TOP` power-down can take effect.
+    /// dropping the power-domain lock so a `TOP` power-down can take effect.
     pub(crate) fn retain(&mut self, mem: &'d mut M, base: u32) {
         let node = mem.register(base);
         *self = Self::Retain {
@@ -551,7 +554,7 @@ impl<M: RetentionMemory> Drop for PowerManagement<'_, M> {
 impl<M: RetentionMemory> core::fmt::Debug for PowerManagement<'_, M> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::WakeLock(_) => f.write_str("PowerManagement::WakeLock"),
+            Self::PowerDomainLock { .. } => f.write_str("PowerManagement::PowerDomainLock"),
             Self::Retain { .. } => f.write_str("PowerManagement::Retain"),
         }
     }
@@ -561,7 +564,7 @@ impl<M: RetentionMemory> core::fmt::Debug for PowerManagement<'_, M> {
 impl<M: RetentionMemory> defmt::Format for PowerManagement<'_, M> {
     fn format(&self, fmt: defmt::Formatter<'_>) {
         match self {
-            Self::WakeLock(_) => defmt::write!(fmt, "PowerManagement::WakeLock"),
+            Self::PowerDomainLock { .. } => defmt::write!(fmt, "PowerManagement::PowerDomainLock"),
             Self::Retain { .. } => defmt::write!(fmt, "PowerManagement::Retain"),
         }
     }
