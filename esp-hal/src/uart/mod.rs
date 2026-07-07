@@ -617,11 +617,10 @@ pub struct UartRx<'d, Dm: DriverMode> {
     phantom: PhantomData<Dm>,
     guard: PeripheralGuard,
     peri_clock_guard: UartClockGuard<'d>,
-    // Receiving data continuously, the peripheral can't let the system sleep. On
-    // the C6 this doubles as the retention state: opting into retention (see
-    // `Uart::with_retention_memory`) drops the wake-lock so `TOP` can power down.
+    // Active keeps `TOP` powered; `Uart::with_retention_memory` swaps to retained.
     #[cfg(esp32c6)]
     power: crate::rtc_cntl::retention::PowerManagement<'d, UartRetentionMemory>,
+    // Receiving data continuously, the peripheral can't let the system sleep.
     #[cfg(not(esp32c6))]
     _wake_lock: WakeLock,
     reported_errors: EnumSet<RxErrorKind>,
@@ -1868,16 +1867,13 @@ where
         self.tx.uart.info().regs()
     }
 
-    /// Retain this UART's configuration registers across a `TOP`-domain
-    /// power-down during light sleep, using caller-provided memory.
+    /// Retain this UART's config registers across a `TOP` power-down in light
+    /// sleep, using `mem` (which must outlive the driver, so typically a
+    /// `static` via `mk_static!`).
     ///
-    /// A live UART keeps `TOP` powered so light sleep can't lose its state.
-    /// Calling this instead lets the PMU/regDMA engine back the config registers
-    /// up into the caller-owned [`UartRetentionMemory`] on the way into sleep and
-    /// restore them on wakeup, dropping the wake-lock so `TOP` can be powered
-    /// down. `mem` must outlive the driver, so it is typically a `static` via
-    /// `mk_static!`. The console/log UART is retained automatically and does not
-    /// need this.
+    /// While active the driver keeps `TOP` powered; this instead drops that lock
+    /// and lets regDMA save/restore the config, so `TOP` can be powered down. The
+    /// console/log UART is retained automatically and does not need this.
     #[cfg(esp32c6)]
     #[instability::unstable]
     pub fn with_retention_memory(mut self, mem: &'d mut UartRetentionMemory) -> Self {

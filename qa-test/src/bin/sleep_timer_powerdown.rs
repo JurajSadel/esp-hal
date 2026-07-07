@@ -1,33 +1,22 @@
 //! Timer-woken light sleep with the CPU/TOP power domains powered down.
 //!
-//! Three sleep policies for the same timer wakeup:
+//! Three policies for the same timer wakeup: clock-gated (plain light sleep),
+//! cpu-powerdown ([`with_cpu_power_down`], CPU state saved in software) and
+//! top-powerdown ([`with_top_power_down`], whole `TOP` domain off via regDMA;
+//! also powers the CPU down on the C6). Each round prints the time slept and
+//! [`cpu_power_down_wake_count`], which only advances when the CPU lost power.
 //!
-//! - **clock-gated** ([`RtcSleepConfig::default`]): plain light sleep, the CPU is only clock-gated
-//!   and no register state is lost.
-//! - **cpu-powerdown** ([`with_cpu_power_down`]): the CPU domain is powered off; its state is
-//!   saved/restored in software (see `cpu_retention`).
-//! - **top-powerdown** ([`with_top_power_down`]): the whole digital `TOP` domain is powered off;
-//!   regDMA backs its peripherals up to RAM and the PMU restores them on wakeup. On the C6 this
-//!   also powers the CPU down.
+//! It also proves the design end to end:
 //!
-//! Each round prints the time actually slept (from the always-on RTC) and
-//! [`cpu_power_down_wake_count`], which is bumped from the ROM wake stub and so
-//! advances only when the CPU domain really lost power.
+//! - **Negative control**: an un-retained `TOP` register (I2C0 `SCL_LOW_PERIOD`) survives a
+//!   clock-gated sleep but is wiped by `top-powerdown`.
+//! - **Safety net**: while UART1 is active and un-retained it holds a `TOP` power-domain lock, so
+//!   `top-powerdown` degrades to clock-gating.
+//! - **Opt-in retention**: UART1/I2C0/SPI2 are retained, then a config register of each is
+//!   confirmed to survive `top-powerdown`.
 //!
-//! The example also proves the design end to end:
-//!
-//! - **Negative control**: one un-retained `TOP` register (I2C0 `SCL_LOW_PERIOD`) survives a
-//!   clock-gated sleep (what a build without retention does) but is wiped by `top-powerdown` -
-//!   direct evidence the domain lost power.
-//! - **Safety net**: while UART1 is active but not retained it holds a `TOP` power-domain lock, so
-//!   a `top-powerdown` request degrades to clock-gating (sleep still happens, `TOP` stays powered)
-//!   instead of destroying its state (the counter stays put).
-//! - **Opt-in retention**: UART1, I2C0 and SPI2 are opted in via [`Uart::with_retention_memory`] /
-//!   [`I2c::with_retention_memory`] / [`Spi::with_retention_memory`], then a config register of
-//!   each is confirmed to survive `top-powerdown`.
-//!
-//! GPIO5 is driven high while awake and low while asleep, bracketing each sleep
-//! window for a current meter / logic analyzer (e.g. Nordic PPK2).
+//! GPIO5 is high while awake, low while asleep, to bracket each sleep for a
+//! current meter / logic analyzer.
 
 //% CHIP_FILTER: esp32c6
 
@@ -61,19 +50,15 @@ macro_rules! mk_static {
     }};
 }
 
-/// Sleep duration per round, in milliseconds. Long enough to give a current
-/// meter a wide, flat sleep plateau to average over.
+/// Sleep duration per round (ms), wide enough to average on a current meter.
 const EVENT_MS: u64 = 1000;
-/// Awake window between sleeps, in milliseconds, so the sleep plateaus are
-/// clearly separated on a current/logic trace.
+/// Awake window between sleeps (ms), to separate the plateaus on a trace.
 const AWAKE_MS: u32 = 200;
 /// Rounds per mode.
 const ROUNDS: u32 = 3;
 
-/// Sleep once for `EVENT_MS`, then report the wall-clock time spent asleep (from
-/// the always-on RTC) and the CPU power-down wake counter. `marker` is driven
-/// low for the sleep window (high while awake) so a PPK2/logic channel can
-/// bracket each sleep.
+/// Sleep once for `EVENT_MS` and report the time slept (from the RTC) and the
+/// CPU power-down count. `marker` is driven low for the sleep window.
 fn sleep_round(
     rtc: &mut Rtc<'_>,
     marker: &mut Output<'_>,
@@ -107,12 +92,10 @@ fn main() -> ! {
     let mut rtc = Rtc::new(peripherals.LPWR);
     let delay = Delay::new();
 
-    // Awake = high, asleep = low. The IO domain stays powered through light
-    // sleep, so the pin holds its level and a meter/scope sees a clean window.
+    // Awake = high, asleep = low. The IO domain stays powered, so the pin holds.
     let mut marker = Output::new(peripherals.GPIO5, Level::High, OutputConfig::default());
 
-    // Each power-down config gets its own caller-owned retention buffer;
-    // clock-gating needs none. `RtcSleepConfig` is `Copy`, so `top_pd` is reused.
+    // Each power-down config gets its own caller-owned retention buffer.
     let clock_gated = RtcSleepConfig::default();
     let cpu_pd = RtcSleepConfig::default()
         .with_cpu_power_down(mk_static!(CpuRetentionMemory, CpuRetentionMemory::new()));
@@ -123,12 +106,11 @@ fn main() -> ! {
 
     println!("up and running!");
 
-    // Negative control: an idle, un-retained I2C0 (a TOP peripheral, holding no
-    // wake-lock) keeps its SCL_LOW_PERIOD register through a clock-gated sleep
-    // but loses it to a top-powerdown - proof the domain really lost power.
+    // Negative control: an idle, un-retained I2C0 keeps its SCL_LOW_PERIOD
+    // register through a clock-gated sleep but loses it to a top-powerdown.
     const I2C0_SCL_LOW_PERIOD: *const u32 = 0x6000_4000 as *const u32;
     let mut i2c0 = I2c::new(peripherals.I2C0, I2cConfig::default()).unwrap();
-    // SAFETY: I2C0 is configured and clocked (driver alive), register readable.
+    // SAFETY: driver alive, register readable.
     let scl_configured = unsafe { I2C0_SCL_LOW_PERIOD.read_volatile() };
 
     marker.set_low();
@@ -174,13 +156,11 @@ fn main() -> ! {
         downs_after_nc
     );
 
-    // The power-down above reset I2C0; re-apply its config for the retention
-    // proof below, which needs a valid, non-zero state.
+    // The power-down above reset I2C0; re-apply its config for the proof below.
     i2c0.apply_config(&I2cConfig::default()).unwrap();
 
-    // UART1 (a TOP peripheral) is live but not yet retained, so its driver holds
-    // a TOP power-domain lock and a top-powerdown request must degrade to
-    // clock-gating rather than destroy its config: the counter must not advance.
+    // UART1 is live but not yet retained, so it holds a TOP power-domain lock:
+    // top-powerdown must degrade to clock-gating (counter must not advance).
     const UART1_CLKDIV: *const u32 = 0x6000_1014 as *const u32;
     let uart1 = Uart::new(peripherals.UART1, UartConfig::default()).unwrap();
 
@@ -207,27 +187,25 @@ fn main() -> ! {
         }
     );
 
-    // Opt UART1 into retention: this drops its power-domain lock and stores the backing
-    // memory in the driver, so its registers are saved/restored around the
-    // power-down instead. Kept alive for the proof.
+    // Retain UART1: drops the lock and stores the memory in the driver, so its
+    // registers are saved/restored around the power-down. Kept alive for the proof.
     let _uart1 =
         uart1.with_retention_memory(mk_static!(UartRetentionMemory, UartRetentionMemory::new()));
-    // SAFETY: UART1 is configured and clocked (driver alive), register readable.
+    // SAFETY: driver alive, register readable.
     let clkdiv_before = unsafe { UART1_CLKDIV.read_volatile() };
 
-    // Same for I2C0 (re-used from the negative control above): retention stores
-    // the memory in the driver and preserves its config across the power-down.
+    // Same for I2C0 (re-used from the negative control above).
     let _i2c0 =
         i2c0.with_retention_memory(mk_static!(I2cRetentionMemory, I2cRetentionMemory::new()));
-    // SAFETY: I2C0 is configured and clocked (driver alive), register readable.
+    // SAFETY: driver alive, register readable.
     let i2c_scl_before = unsafe { I2C0_SCL_LOW_PERIOD.read_volatile() };
 
-    // ...and SPI2 (GPSPI2), whose CLOCK register holds the divider from `Spi::new`.
+    // ...and SPI2, whose CLOCK register holds the divider from `Spi::new`.
     const SPI2_CLOCK: *const u32 = 0x6008_100C as *const u32;
     let spi2 = Spi::new(peripherals.SPI2, SpiConfig::default()).unwrap();
     let _spi2 =
         spi2.with_retention_memory(mk_static!(SpiRetentionMemory, SpiRetentionMemory::new()));
-    // SAFETY: SPI2 is configured and clocked (driver alive), register readable.
+    // SAFETY: driver alive, register readable.
     let spi_clock_before = unsafe { SPI2_CLOCK.read_volatile() };
 
     // Same timer wakeup, increasingly aggressive power policies.
@@ -243,7 +221,7 @@ fn main() -> ! {
         }
     }
 
-    // With retention, UART1's clock divider is unchanged across the power-down.
+    // With retention, UART1's CLKDIV survives the power-down.
     let clkdiv_after = unsafe { UART1_CLKDIV.read_volatile() };
     println!(
         "UART1 CLKDIV: before = {:#x}, after top-powerdown = {:#x} -> {}",
@@ -282,8 +260,7 @@ fn main() -> ! {
         }
     );
 
-    // Keep going in the deepest mode so the counter can be watched climbing and
-    // a meter has a steady stream of identical sleep windows to average.
+    // Keep going in the deepest mode for a steady stream of sleep windows.
     let mut round = ROUNDS;
     loop {
         round += 1;

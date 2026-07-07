@@ -1,26 +1,15 @@
 //! Register DMA (regDMA) based register retention (ESP32-C6).
 //!
-//! The Power Assist Unit (PAU) contains a regDMA engine that backs up and
-//! restores peripheral register state to/from RAM while the digital `TOP`
-//! domain is powered down during light sleep, so execution resumes seamlessly.
-//!
-//! regDMA walks a linked list of nodes in RAM. Each [`RegdmaLink`] node is one
-//! of: CONTINUOUS (a run of registers via a RAM buffer), ADDR_MAP (a run where a
-//! bitmap selects which registers transfer), WRITE (a masked write) or WAIT
-//! (poll a register). The PMU runs the list over PAU entry link 0 on the way
-//! into and out of sleep, with no CPU involvement. The `sys_periph` module
-//! builds the TOP-domain core register set into a caller-owned
+//! The PAU's regDMA engine backs peripheral registers up to RAM and restores
+//! them while the `TOP` domain is powered down in light sleep. It walks a linked
+//! list of [`RegdmaLink`] nodes over PAU entry link 0 with no CPU involvement.
+//! `sys_periph` builds the core register set into a caller-owned
 //! [`SystemRetentionMemory`]; [`enable_top_retention`] chains it with any opt-in
-//! peripheral entries (registered from a caller-owned [`UartRetentionMemory`]
-//! and friends) before arming the link. Nothing is reserved statically: without
-//! a `SystemRetentionMemory` the TOP domain is only clock-gated, never powered
-//! down.
+//! peripheral entries before arming the link. Without a `SystemRetentionMemory`
+//! the `TOP` domain is only clock-gated.
 //!
-//! References (ESP-IDF `v5.4`):
-//! - `components/soc/include/soc/regdma.h` (node layout)
-//! - `components/hal/esp32c6/include/hal/pau_ll.h`
-//! - `components/hal/esp32c6/pau_hal.c`
-//! - `components/esp_hw_support/port/pau_regdma.c`
+//! References (ESP-IDF `v5.4`): `soc/regdma.h`, `hal/esp32c6/pau_ll.h`,
+//! `hal/esp32c6/pau_hal.c`, `esp_hw_support/port/pau_regdma.c`.
 
 use core::{
     marker::PhantomData,
@@ -59,13 +48,7 @@ enum LinkMode {
     Wait = 3,
 }
 
-/// A single regDMA linked-list node.
-///
-/// The layout matches the PAU hardware: the link address points at `head`,
-/// followed by the four body words (ESP-IDF's software-only `stat` block before
-/// `head` is omitted). ADDR_MAP additionally uses the four-word `map` bitmap;
-/// the other modes leave it as harmless padding. Branch nodes are not
-/// implemented.
+/// A single regDMA linked-list node (matches the PAU `head` + body layout).
 ///
 /// - CONTINUOUS: `w0 = backup addr`, `w1 = restore addr`, `w2 = RAM buffer`.
 /// - ADDR_MAP: as CONTINUOUS, plus `map` selecting which registers to transfer.
@@ -76,12 +59,12 @@ enum LinkMode {
 pub(crate) struct RegdmaLink {
     /// Packed `regdma_link_head_t`.
     head: u32,
-    /// Pointer to the next node's `head`, or `0` for the end of the list.
+    /// Next node's `head`, or `0` at the end of the list.
     next: u32,
     w0: u32,
     w1: u32,
     w2: u32,
-    /// ADDR_MAP register-selection bitmap; zero (and unread) for other modes.
+    /// ADDR_MAP register-selection bitmap; unread for other modes.
     map: [u32; 4],
 }
 
@@ -111,10 +94,8 @@ impl RegdmaLink {
         Self::continuous_split(reg, reg, storage, len)
     }
 
-    /// A CONTINUOUS node whose backup source (`backup`) and restore destination
-    /// (`restore`) registers differ, sharing one RAM buffer. Used where hardware
-    /// exposes a value register for readback and a separate load register for
-    /// restore (e.g. the SysTimer counter).
+    /// A CONTINUOUS node with distinct backup/restore registers sharing one RAM
+    /// buffer (e.g. the SysTimer value vs. load registers).
     fn continuous_split(backup: u32, restore: u32, storage: u32, len: u32) -> Self {
         Self {
             head: Self::head(LinkMode::Continuous, len, false, false),
@@ -126,14 +107,9 @@ impl RegdmaLink {
         }
     }
 
-    /// An ADDR_MAP node backing up/restoring the `count` registers selected by
-    /// `map` from the register window starting at `reg`, via `storage`.
-    ///
-    /// `map` is a bitmap over the window (bit `i` = the register at
-    /// `reg + i * 4`); the engine transfers `count` registers total (one per
-    /// set bit, walking bits from LSB up) into `count` consecutive words of
-    /// `storage`. Used to skip read-only/FIFO registers interspersed in a
-    /// peripheral's register block (e.g. the console UART).
+    /// An ADDR_MAP node: back up/restore the `count` registers selected by `map`
+    /// (bit `i` = register at `reg + i * 4`) from `reg` into `storage`, skipping
+    /// interspersed read-only/FIFO registers.
     fn addr_map(reg: u32, storage: u32, count: u32, map: [u32; 4]) -> Self {
         Self {
             head: Self::head(LinkMode::AddrMap, count, false, false),
@@ -145,10 +121,8 @@ impl RegdmaLink {
         }
     }
 
-    /// A WRITE node that writes `value` (under `mask`) to `target`.
-    ///
-    /// `skip_b`/`skip_r` select whether the write happens during backup and/or
-    /// restore (WRITE/WAIT nodes are usually restore-only or backup-only).
+    /// A WRITE node that writes `value` (under `mask`) to `target`. `skip_b`/
+    /// `skip_r` gate the write on the backup/restore pass.
     fn write(target: u32, value: u32, mask: u32, skip_b: bool, skip_r: bool) -> Self {
         Self {
             head: Self::head(LinkMode::Write, 0, skip_b, skip_r),
@@ -177,29 +151,22 @@ impl RegdmaLink {
     }
 }
 
-// Console UART configuration-register retention sequence, shared by the
-// always-on console retention in `sys_periph` and the opt-in
-// [`UartRetentionMemory`]. Values from ESP-IDF v5.4 `uart_periph.c`
-// `UART_SLEEP_RETENTION_ENTRIES` and `uart_reg.h`.
+// Console UART config-register retention, shared by the always-on console and
+// the opt-in `UartRetentionMemory`. ESP-IDF v5.4 `uart_periph.c`
+// `UART_SLEEP_RETENTION_ENTRIES`, `uart_reg.h`.
 const UART_INT_ENA_OFF: u32 = 0x0C; // UART_INT_ENA_REG
 const UART_REG_UPDATE_OFF: u32 = 0x98; // UART_REG_UPDATE_REG
 const UART_REG_UPDATE: u32 = 1 << 0;
-/// Number of registers actually retained (set bits in [`UART_REGS_MAP`]).
+/// Registers retained (set bits in [`UART_REGS_MAP`]).
 const UART_RETENTION_REGS_CNT: u32 = 21;
-/// `uart_regs_map[4]` from ESP-IDF: bitmap over the INT_ENA..ID window
-/// selecting the config registers, skipping interspersed FIFO/status registers.
+/// `uart_regs_map[4]`: config registers in the INT_ENA..ID window.
 const UART_REGS_MAP: [u32; 4] = [0x007f_ff6d, 0x0000_0010, 0, 0];
-/// Nodes per UART: one ADDR_MAP (config regs) + a restore-only WRITE+WAIT that
-/// pulses `UART_REG_UPDATE` to latch the shadow (`_SYNC`) registers.
+/// One ADDR_MAP + a restore-only WRITE+WAIT pulsing `UART_REG_UPDATE`.
 const UART_NODE_COUNT: usize = 3;
 
-/// Build the UART configuration-register retention sequence for the peripheral
-/// at `base` into `nodes` (exactly [`UART_NODE_COUNT`] entries), backing the
-/// selected registers up into `storage` (>= [`UART_RETENTION_REGS_CNT`] words).
-///
-/// The ADDR_MAP node backs up/restores the config registers; the WRITE+WAIT
-/// skip the backup pass (they only matter on restore) and pulse the update bit
-/// so the restored values are latched.
+/// Build the UART retention sequence for `base` into `nodes`, backing the
+/// registers up into `storage`. The WRITE+WAIT pulse the update bit on restore
+/// to latch the shadow (`_SYNC`) registers.
 fn build_uart_seq(base: u32, nodes: &mut [RegdmaLink], storage: u32) {
     nodes[0] = RegdmaLink::addr_map(
         base + UART_INT_ENA_OFF,
@@ -217,28 +184,22 @@ fn build_uart_seq(base: u32, nodes: &mut [RegdmaLink], storage: u32) {
     nodes[2] = RegdmaLink::wait(base + UART_REG_UPDATE_OFF, 0, UART_REG_UPDATE, true, false);
 }
 
-// I2C configuration-register retention sequence. Values from ESP-IDF v5.4
-// `i2c_periph.c` `i2c0_regs_retention` and `i2c_reg.h`. I2C config registers are
-// shadowed, so on restore the sequence pulses the FSM reset and then requests a
-// config update, waiting for it to latch.
+// I2C config-register retention. ESP-IDF v5.4 `i2c_periph.c`
+// `i2c0_regs_retention`, `i2c_reg.h`. Config registers are shadowed, so restore
+// pulses the FSM reset then requests a config update and waits for it to latch.
 const I2C_SCL_LOW_PERIOD_OFF: u32 = 0x00; // I2C_SCL_LOW_PERIOD_REG: ADDR_MAP window base
 const I2C_CTR_OFF: u32 = 0x04; // I2C_CTR_REG
-const I2C_FSM_RST: u32 = 1 << 10; // I2C_FSM_RST (single-bit value == its mask)
-const I2C_CONF_UPGATE: u32 = 1 << 11; // I2C_CONF_UPGATE (single-bit value == its mask)
-/// Number of registers actually retained (set bits in [`I2C_REGS_MAP`]).
+const I2C_FSM_RST: u32 = 1 << 10; // I2C_FSM_RST (value == mask)
+const I2C_CONF_UPGATE: u32 = 1 << 11; // I2C_CONF_UPGATE (value == mask)
+/// Registers retained (set bits in [`I2C_REGS_MAP`]).
 const I2C_RETENTION_REGS_CNT: u32 = 18;
-/// `i2c0_regs_map[4]` from ESP-IDF: bitmap over the
-/// `SCL_LOW_PERIOD..SCL_STRETCH_CONF` window selecting the config registers,
-/// skipping the interspersed command/status/FIFO registers.
+/// `i2c0_regs_map[4]`: config registers in the `SCL_LOW_PERIOD..SCL_STRETCH_CONF` window.
 const I2C_REGS_MAP: [u32; 4] = [0xc03f_345b, 0x3, 0, 0];
-/// Nodes per I2C: one ADDR_MAP (config regs) + a restore-only WRITE/WRITE/WRITE
-/// +WAIT that pulses `FSM_RST` and then `CONF_UPGATE` to latch the restored
-/// configuration.
+/// One ADDR_MAP + a restore-only WRITE*3/WAIT pulsing `FSM_RST` then `CONF_UPGATE`.
 const I2C_NODE_COUNT: usize = 5;
 
-/// Build the I2C configuration-register retention sequence for the peripheral at
-/// `base` into `nodes` (exactly [`I2C_NODE_COUNT`] entries), backing the selected
-/// registers up into `storage` (>= [`I2C_RETENTION_REGS_CNT`] words).
+/// Build the I2C retention sequence for `base` into `nodes`, backing the
+/// registers up into `storage`.
 fn build_i2c_seq(base: u32, nodes: &mut [RegdmaLink], storage: u32) {
     let ctr = base + I2C_CTR_OFF;
     nodes[0] = RegdmaLink::addr_map(
@@ -247,36 +208,27 @@ fn build_i2c_seq(base: u32, nodes: &mut [RegdmaLink], storage: u32) {
         I2C_RETENTION_REGS_CNT,
         I2C_REGS_MAP,
     );
-    // Restore-only (skip on backup): pulse the FSM reset, then request a config
-    // update and wait for it to latch.
+    // Restore-only: pulse FSM reset, request config update, wait for it to latch.
     nodes[1] = RegdmaLink::write(ctr, I2C_FSM_RST, I2C_FSM_RST, true, false);
     nodes[2] = RegdmaLink::write(ctr, 0, I2C_FSM_RST, true, false);
     nodes[3] = RegdmaLink::write(ctr, I2C_CONF_UPGATE, I2C_CONF_UPGATE, true, false);
     nodes[4] = RegdmaLink::wait(ctr, 0, I2C_CONF_UPGATE, true, false);
 }
 
-// GPSPI2 configuration-register retention. Values from ESP-IDF v5.4
-// `spi_periph.c` `spi2_regs_retention` and `spi_reg.h`.
-//
-// IDF additionally re-sets the `TRANS_DONE`/`DMA_SEG_TRANS_DONE` interrupt bits
-// on restore, so its driver can finish a transfer that sleep interrupted. esp-hal
-// only powers the `TOP` domain down while the bus is idle (an in-flight transfer
-// keeps the domain powered via a wake-lock), so that driver-specific interrupt
-// write is intentionally omitted here - it would otherwise inject a spurious
-// completion interrupt on wakeup.
+// GPSPI2 config-register retention. ESP-IDF v5.4 `spi_periph.c`
+// `spi2_regs_retention`, `spi_reg.h`. IDF's restore-time re-set of the
+// TRANS_DONE/DMA_SEG_TRANS_DONE interrupt bits is omitted: esp-hal only powers
+// `TOP` down on an idle bus, so it would only inject a spurious completion IRQ.
 const SPI_CMD_OFF: u32 = 0x00; // SPI_CMD_REG: ADDR_MAP window base
-/// Number of registers actually retained (set bits in [`SPI_REGS_MAP`]).
+/// Registers retained (set bits in [`SPI_REGS_MAP`]).
 const SPI_RETENTION_REGS_CNT: u32 = 12;
-/// `spi_regs_map[4]` from ESP-IDF: bitmap over the `CMD..SLAVE` window selecting
-/// cmd/addr/ctrl/clock/user/user1/user2/ms_dlen/misc, dma_conf/dma_int_ena and
-/// slave, skipping the FIFO/status/DMA-buffer registers interspersed between.
+/// `spi_regs_map[4]`: config registers in the `CMD..SLAVE` window.
 const SPI_REGS_MAP: [u32; 4] = [0x0000_31ff, 0x0100_0000, 0, 0];
-/// Nodes per SPI: a single ADDR_MAP over the config registers.
+/// A single ADDR_MAP over the config registers.
 const SPI_NODE_COUNT: usize = 1;
 
-/// Build the SPI configuration-register retention sequence for the peripheral at
-/// `base` into `nodes` (exactly [`SPI_NODE_COUNT`] entry), backing the selected
-/// registers up into `storage` (>= [`SPI_RETENTION_REGS_CNT`] words).
+/// Build the SPI retention sequence for `base` into `nodes`, backing the
+/// registers up into `storage`.
 fn build_spi_seq(base: u32, nodes: &mut [RegdmaLink], storage: u32) {
     nodes[0] = RegdmaLink::addr_map(
         base + SPI_CMD_OFF,
@@ -289,10 +241,9 @@ fn build_spi_seq(base: u32, nodes: &mut [RegdmaLink], storage: u32) {
 /// A node in the intrusive registry of opt-in peripheral retention sequences.
 ///
 /// One lives inside each peripheral's caller-owned retention memory, so any
-/// number of peripherals can register without a fixed-size table or allocation.
-/// The pointers are only dereferenced while rebuilding the PAU chain in
-/// [`arm_link`] (under [`REGISTRY`], on the single HP core), and only ever point
-/// at borrow-frozen caller memory that stays put until it is deregistered.
+/// number of peripherals can register without a fixed table or allocation. The
+/// pointers are only dereferenced in [`arm_link`] (under [`REGISTRY`], on the
+/// single HP core), pointing at borrow-frozen memory until deregistered.
 pub(crate) struct RetentionNode {
     next: Option<NonNull<RetentionNode>>,
     head: *mut RegdmaLink,
@@ -331,8 +282,8 @@ unsafe impl Send for Registry {}
 
 static REGISTRY: NonReentrantMutex<Registry> = NonReentrantMutex::new(Registry(None));
 
-/// Push `node` (living inside a peripheral's caller-owned retention memory) onto
-/// the registry so [`arm_link`] chains its `nodes` on the next TOP power-down.
+/// Push `node` onto the registry so [`arm_link`] chains its `nodes` on the next
+/// TOP power-down.
 fn register_node(node: &mut RetentionNode, nodes: &mut [RegdmaLink]) -> NonNull<RetentionNode> {
     node.head = nodes.as_mut_ptr();
     node.len = nodes.len();
@@ -363,10 +314,8 @@ fn deregister_node(node: &mut RetentionNode) {
     node.next = None;
 }
 
-/// Chain a slice of nodes into a linked list without terminating it: each node
-/// points at the next and has its EOF flag cleared. Returns a pointer to the
-/// last node so the caller can either terminate it or link it to a following
-/// segment.
+/// Chain a slice of nodes (clearing each EOF flag), returning the last node so
+/// the caller can terminate it or link it to a following segment.
 fn link_internal(nodes: &mut [RegdmaLink]) -> *mut RegdmaLink {
     let len = nodes.len();
     for i in 0..len - 1 {
@@ -376,9 +325,9 @@ fn link_internal(nodes: &mut [RegdmaLink]) -> *mut RegdmaLink {
     &mut nodes[len - 1]
 }
 
-/// Chain the always-retained `core` list followed by every registered opt-in
-/// entry into a single linked list, terminating only the final node. Returns
-/// the head address to program into the PAU.
+/// Chain the always-retained `core` list plus every registered opt-in entry
+/// into one list, terminating only the final node. Returns the head address to
+/// program into the PAU.
 fn arm_link(core: &mut [RegdmaLink]) -> u32 {
     let head = core[0].addr();
     let mut tail = link_internal(core);
@@ -387,15 +336,13 @@ fn arm_link(core: &mut [RegdmaLink]) -> u32 {
         let mut current = registry.0;
         while let Some(node) = current {
             // SAFETY: a registered node points at a live, borrow-frozen
-            // caller-owned array of `len` nodes, distinct from `core` and from
-            // every other entry, so no aliasing `&mut` is formed.
+            // caller-owned array of `len` nodes, distinct from every other.
             let (seg_head, seg_len, next) = unsafe {
                 let node = node.as_ref();
                 (node.head, node.len, node.next)
             };
             let seg = unsafe { core::slice::from_raw_parts_mut(seg_head, seg_len) };
-            // SAFETY: `tail` is the last node of the previous segment, still
-            // owned exclusively here.
+            // SAFETY: `tail` is the last node of the previous segment.
             unsafe {
                 (*tail).next = seg[0].addr();
                 (*tail).head &= !HEAD_EOF_BIT;
@@ -414,12 +361,8 @@ fn arm_link(core: &mut [RegdmaLink]) -> u32 {
     head
 }
 
-/// Generate a per-peripheral caller-owned regDMA backing store.
-///
-/// Each peripheral gets its own named type sized to exactly what it needs (its
-/// retention link `nodes` plus the `buf` its registers are backed up into), so
-/// you only pay RAM for the peripherals you actually retain. `$build` is the
-/// per-peripheral sequence builder used when the memory is registered.
+/// Generate a per-peripheral caller-owned regDMA backing store, sized to its
+/// `nodes` and register `buf`. `$build` is its sequence builder.
 macro_rules! peripheral_retention_memory {
     ($name:ident, $nodes:expr, $words:expr, $build:path, $doc:expr) => {
         #[doc = $doc]
@@ -467,10 +410,10 @@ peripheral_retention_memory!(
     UART_NODE_COUNT,
     UART_RETENTION_REGS_CNT as usize,
     build_uart_seq,
-    "Caller-owned backing store that retains one UART peripheral's configuration \
-registers across a `TOP`-domain power-down during light sleep. Handed to the \
-driver via [`Uart::with_retention_memory`](crate::uart::Uart::with_retention_memory); \
-the console/log UART is retained automatically and does not need one."
+    "Caller-owned backing store retaining one UART's config registers across a \
+`TOP` power-down. Passed to \
+[`Uart::with_retention_memory`](crate::uart::Uart::with_retention_memory); the \
+console/log UART is retained automatically."
 );
 
 peripheral_retention_memory!(
@@ -478,8 +421,8 @@ peripheral_retention_memory!(
     I2C_NODE_COUNT,
     I2C_RETENTION_REGS_CNT as usize,
     build_i2c_seq,
-    "Caller-owned backing store that retains one I2C peripheral's configuration \
-registers across a `TOP`-domain power-down. Handed to the driver via \
+    "Caller-owned backing store retaining one I2C's config registers across a \
+`TOP` power-down. Passed to \
 [`I2c::with_retention_memory`](crate::i2c::master::I2c::with_retention_memory). \
 See [`UartRetentionMemory`]."
 );
@@ -489,28 +432,25 @@ peripheral_retention_memory!(
     SPI_NODE_COUNT,
     SPI_RETENTION_REGS_CNT as usize,
     build_spi_seq,
-    "Caller-owned backing store that retains one SPI peripheral's configuration \
-registers across a `TOP`-domain power-down. Handed to the driver via \
+    "Caller-owned backing store retaining one SPI's config registers across a \
+`TOP` power-down. Passed to \
 [`Spi::with_retention_memory`](crate::spi::master::Spi::with_retention_memory). \
 See [`UartRetentionMemory`]."
 );
 
-/// A peripheral's caller-owned retention memory that can be registered for
-/// TOP-domain retention. Implemented by the generated `*RetentionMemory` types.
+/// Caller-owned retention memory that can be registered for TOP-domain
+/// retention. Implemented by the generated `*RetentionMemory` types.
 pub(crate) trait RetentionMemory {
-    /// Build this peripheral's retention sequence for the instance at `base` and
-    /// register it, returning a handle to its registry node.
+    /// Build the retention sequence for `base` and register it, returning its
+    /// registry node.
     fn register(&mut self, base: u32) -> NonNull<RetentionNode>;
 }
 
-/// A `TOP`-domain peripheral driver's power-management state.
-///
-/// The peripheral is either active and holding a [`PowerDomainLock`] (which
-/// keeps `TOP` powered - degrading light sleep to clock-gating - so it can't
-/// lose state, without otherwise preventing sleep), or opted into retention: it
-/// drops the lock and lets regDMA save/restore its configuration across a `TOP`
-/// power-down instead, using caller-owned memory borrowed for `'d`. Drivers
-/// store this directly, so the user never juggles a separate guard.
+/// A `TOP`-domain peripheral driver's power-management state: either active and
+/// holding a [`PowerDomainLock`] (keeping `TOP` powered so it can't lose state,
+/// without preventing sleep), or retained (the lock is dropped and regDMA
+/// save/restores its config across a `TOP` power-down from `'d`-borrowed memory).
+/// Stored in the driver, so the user never juggles a separate guard.
 pub(crate) enum PowerManagement<'d, M: RetentionMemory> {
     /// Active, not retained: the held lock keeps `TOP` powered.
     PowerDomainLock { _lock: PowerDomainLock },
@@ -522,16 +462,15 @@ pub(crate) enum PowerManagement<'d, M: RetentionMemory> {
 }
 
 impl<'d, M: RetentionMemory> PowerManagement<'d, M> {
-    /// Active state: keep `TOP` powered so light sleep can't lose the
-    /// peripheral's state while it is in use and un-retained.
+    /// Active, un-retained: keep `TOP` powered so sleep can't lose its state.
     pub(crate) fn new() -> Self {
         Self::PowerDomainLock {
             _lock: PowerDomainLock::new(Domain::Top),
         }
     }
 
-    /// Opt into retention: build and register `mem` for the instance at `base`,
-    /// dropping the power-domain lock so a `TOP` power-down can take effect.
+    /// Opt into retention: register `mem` for `base` and drop the domain lock so
+    /// a `TOP` power-down can take effect.
     pub(crate) fn retain(&mut self, mem: &'d mut M, base: u32) {
         let node = mem.register(base);
         *self = Self::Retain {
@@ -570,22 +509,17 @@ impl<M: RetentionMemory> defmt::Format for PowerManagement<'_, M> {
     }
 }
 
-/// Caller-owned backing store for the ESP32-C6 TOP-domain **system peripheral**
-/// register set (PCR clocks, interrupt matrix, HP system, TEE/APM, IO MUX, GPIO
-/// matrix, flash SPI mem, console UART and SysTimer).
+/// Caller-owned backing store for the ESP32-C6 TOP-domain system-peripheral
+/// register set (PCR, interrupt matrix, HP system, TEE/APM, IO MUX, GPIO matrix,
+/// flash SPI mem, console UART and SysTimer).
 ///
-/// This is the core state regDMA must retain for the digital `TOP` domain to be
-/// powered down at all; the caller opts in by passing it to
-/// [`RtcSleepConfig::with_top_power_down`]. Like [`CpuRetentionMemory`] it is
-/// caller-owned - nothing is reserved statically, so without it the TOP domain
-/// is only clock-gated - and must stay valid for every sleep it is used with, so
-/// it is typically placed in a `static`.
-///
-/// Individual peripherals (UART/I2C/SPI) opt into retaining *their own* config
-/// on top of this via `with_retention_memory`.
+/// This is the core state regDMA must retain for the `TOP` domain to power down
+/// at all; the caller opts in via [`RtcSleepConfig::with_top_power_down`].
+/// Without it the `TOP` domain is only clock-gated. It must stay valid for every
+/// sleep, so it is typically a `static`. Individual peripherals opt into
+/// retaining their own config on top of this via `with_retention_memory`.
 ///
 /// [`RtcSleepConfig::with_top_power_down`]: crate::rtc_cntl::sleep::RtcSleepConfig::with_top_power_down
-/// [`CpuRetentionMemory`]: crate::rtc_cntl::cpu_retention::CpuRetentionMemory
 #[instability::unstable]
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -603,7 +537,7 @@ impl Default for SystemRetentionMemory {
 }
 
 impl SystemRetentionMemory {
-    /// Create a new, zeroed TOP-domain system-peripheral retention buffer.
+    /// Create a new, zeroed system-peripheral retention buffer.
     #[instability::unstable]
     pub const fn new() -> Self {
         Self {
@@ -613,42 +547,34 @@ impl SystemRetentionMemory {
     }
 }
 
-/// Arm PMU-driven regDMA retention of the TOP-domain peripherals for the
-/// upcoming light sleep: program PAU entry link 0 and enable the backup phases.
+/// Arm regDMA retention of the TOP-domain peripherals for the upcoming light
+/// sleep: program PAU entry link 0 and enable the backup phases.
 ///
-/// The PMU runs the same list to back up on HP_ACTIVE -> HP_SLEEP and restore on
-/// HP_SLEEP -> HP_ACTIVE. Must be called after the PMU power config (which
-/// resets the backup-enable bits) and before the sleep request. Rebuilds the
-/// chain from the live registry every time, so the PAU never walks a
-/// deregistered entry. Mirrors ESP-IDF's link setup +
-/// `pmu_sleep_enable_regdma_backup()` (active/sleep phases only, no modem
-/// state).
+/// Must be called after the PMU power config (which resets the backup-enable
+/// bits) and before the sleep request. Rebuilds the chain from the live registry
+/// every time, so the PAU never walks a deregistered entry. Mirrors ESP-IDF's
+/// link setup + `pmu_sleep_enable_regdma_backup()` (active/sleep phases only).
 pub(crate) fn enable_top_retention(mem: &mut SystemRetentionMemory) {
-    // pau_ll_enable_bus_clock(true): enable the regDMA bus clock and release its
-    // reset before programming the entry link.
+    // pau_ll_enable_bus_clock: enable the regDMA bus clock and release its reset.
     PCR::regs().regdma_conf().modify(|_, w| {
         w.regdma_clk_en().set_bit();
         w.regdma_rst_en().clear_bit()
     });
-    // pau_hal_set_regdma_wait_timeout: bound how long a WAIT node polls a
-    // register so a never-satisfied condition can't hang the engine. Values
-    // match ESP-IDF's PAU_REGDMA_LINK_WAIT_{RETRY_COUNT,READ_INTERNAL}.
+    // pau_hal_set_regdma_wait_timeout: bound WAIT polling so a never-satisfied
+    // condition can't hang the engine (ESP-IDF PAU_REGDMA_LINK_WAIT_*).
     PAU::regs().regdma_bkp_conf().modify(|_, w| unsafe {
         w.link_tout_thres().bits(1000);
         w.read_interval().bits(32)
     });
 
-    // Build the combined SYS_PERIPH list into the caller-owned buffer, append
-    // any opt-in peripheral retention entries, and program the whole chain as
-    // PAU entry link 0.
+    // Build the SYS_PERIPH list plus opt-in entries and program it as link 0.
     let head = arm_link(sys_periph::build_link(&mut mem.nodes, &mut mem.buf));
     fence(Ordering::SeqCst);
     PAU::regs()
         .regdma_link_0_addr()
         .write(|w| unsafe { w.bits(head) });
 
-    // pmu_sleep_enable_regdma_backup (active <-> sleep only): back up on
-    // active->sleep, restore on sleep->active.
+    // pmu_sleep_enable_regdma_backup: back up active->sleep, restore sleep->active.
     let pmu = PMU::regs();
     pmu.hp_sleep_backup()
         .modify(|_, w| w.hp_active2sleep_backup_en().set_bit());
@@ -656,18 +582,13 @@ pub(crate) fn enable_top_retention(mem: &mut SystemRetentionMemory) {
         .modify(|_, w| w.hp_sleep2active_backup_en().set_bit());
 }
 
-/// ESP32-C6 TOP-domain system-peripheral retention link.
+/// ESP32-C6 TOP-domain system-peripheral retention link: the register regions
+/// for the core system peripherals lost when `TOP` powers down, mirroring
+/// ESP-IDF's `SLEEP_RETENTION_MODULE_SYS_PERIPH` + `..._CLOCK_SYSTEM` in
+/// retention-priority order (system clock first).
 ///
-/// Builds the linked list of register regions for the core system peripherals
-/// that are lost when `TOP` is powered down. The set and ordering mirror
-/// ESP-IDF's `SLEEP_RETENTION_MODULE_SYS_PERIPH` plus
-/// `SLEEP_RETENTION_MODULE_CLOCK_SYSTEM`, sorted by retention priority (system
-/// clock first).
-///
-/// References (ESP-IDF `v5.4`):
-/// - [`system_retention_periph.c`](https://github.com/espressif/esp-idf/blob/v5.4/components/soc/esp32c6/system_retention_periph.c)
-/// - [`sleep_clock.c`](https://github.com/espressif/esp-idf/blob/v5.4/components/esp_hw_support/lowpower/port/esp32c6/sleep_clock.c)
-/// - [`sleep_system_peripheral.c`](https://github.com/espressif/esp-idf/blob/v5.4/components/esp_hw_support/sleep_system_peripheral.c)
+/// References (ESP-IDF `v5.4`): `soc/esp32c6/system_retention_periph.c`,
+/// `esp_hw_support/.../sleep_clock.c`, `esp_hw_support/sleep_system_peripheral.c`.
 mod sys_periph {
     use super::{
         HEAD_LENGTH_MASK,
@@ -686,9 +607,8 @@ mod sys_periph {
         count: u32,
     }
 
-    /// Continuous register regions to retain, in ESP-IDF retention-priority
-    /// order (highest priority first). The end registers used to size each
-    /// region are noted; counts are `((end - base) / 4) + 1`.
+    /// Continuous register regions to retain, in retention-priority order. The
+    /// sizing end register is noted per region; `count = ((end - base) / 4) + 1`.
     const CONT_REGIONS: &[ContRegion] = &[
         // PRI_0 - system clock/reset (PCR)
         ContRegion { base: 0x6009_6000, count: 79 }, // PCR base ..= PCR_SRAM_POWER_CONF_REG (+0x138)
@@ -716,14 +636,12 @@ mod sys_periph {
         ContRegion { base: 0x6000_2384, count: 31 }, // SPIMEM0 MMU_POWER_CTRL ..= DATE
     ];
 
-    /// Index in [`CONT_REGIONS`] at which the TEE/APM (PRI_4) group starts; the
-    /// PRI_2 TEE-critical WRITE node is inserted just before it.
+    /// [`CONT_REGIONS`] index where TEE/APM (PRI_4) starts; the PRI_2 TEE WRITE
+    /// node is inserted just before it.
     const TEE_APM_START: usize = 2;
 
-    /// Index in [`CONT_REGIONS`] at which the IO MUX / GPIO (PRI_6) group
-    /// starts. The console-UART (PRI_5) nodes are inserted just before it, so
-    /// the continuous regions split into a PRI_4/5 prefix (TEE/APM, interrupt
-    /// matrix, HP system) and a PRI_6 suffix (IO MUX, GPIO, SPI mem).
+    /// [`CONT_REGIONS`] index where IO MUX/GPIO (PRI_6) starts; the console-UART
+    /// (PRI_5) nodes are inserted just before it.
     const IOMUX_START: usize = 6;
 
     const fn total_words() -> usize {
@@ -736,13 +654,10 @@ mod sys_periph {
         words
     }
 
-    /// Console UART0 base. Retained automatically (always-on); other UART
-    /// instances opt in via `Uart::with_retention_memory`. The retention
-    /// sequence itself is shared with the opt-in path via [`build_uart_seq`].
+    /// Console UART0 base, retained automatically via [`build_uart_seq`].
     const UART0_BASE: u32 = 0x6000_0000;
 
-    // SysTimer (base 0x6000_A000). Register offsets and bitfield masks from
-    // ESP-IDF v5.4 `systimer_reg.h`; node sequence from
+    // SysTimer. Offsets/masks from ESP-IDF v5.4 `systimer_reg.h`; sequence from
     // `systimer_regs_retention[]`.
     const ST_BASE: u32 = 0x6000_A000;
     const ST_CONF: u32 = ST_BASE; // +0x00
@@ -771,18 +686,16 @@ mod sys_periph {
     const ST_TARGETS_LEN: u32 = 9;
 
     const SYSTIMER_NODE_COUNT: usize = 19;
-    /// SysTimer CONTINUOUS-node words: unit0/1 value (2+2), targets (9),
-    /// conf (1) and int_ena (1).
+    /// SysTimer CONTINUOUS words: unit0/1 value (2+2), targets (9), conf, int_ena.
     const SYSTIMER_CONT_WORDS: usize = 2 + 2 + ST_TARGETS_LEN as usize + 1 + 1;
 
-    /// One node per continuous region, the TEE-critical WRITE node, the console
-    /// UART sequence, and the SysTimer sequence.
+    /// One node per continuous region + TEE WRITE + console UART + SysTimer.
     pub(super) const NODE_COUNT: usize =
         CONT_REGIONS.len() + 1 + UART_NODE_COUNT + SYSTIMER_NODE_COUNT;
     pub(super) const BUF_WORDS: usize =
         total_words() + UART_RETENTION_REGS_CNT as usize + SYSTIMER_CONT_WORDS;
 
-    // Every region count must fit the 10-bit `length` field of a regDMA node.
+    // Every region count must fit the 10-bit node `length` field.
     const _: () = {
         let mut i = 0;
         while i < CONT_REGIONS.len() {
@@ -791,9 +704,8 @@ mod sys_periph {
         }
     };
 
-    /// (Re)build the SYS_PERIPH retention linked list into the caller-owned
-    /// `nodes`/`buf` storage and return the node slice ready to be
-    /// chained/triggered.
+    /// (Re)build the SYS_PERIPH retention list into `nodes`/`buf` and return the
+    /// filled node slice.
     pub(super) fn build_link<'a>(
         nodes: &'a mut [RegdmaLink; NODE_COUNT],
         buf: &mut [u32; BUF_WORDS],
@@ -811,8 +723,8 @@ mod sys_periph {
             node += 1;
         }
 
-        // PRI_2: TEE-critical WRITE node (restore-only: skip on backup). Clears
-        // TEE_M4_MODE_CTRL so the following TEE/APM restore can write freely.
+        // PRI_2: restore-only WRITE clearing TEE_M4_MODE_CTRL so the TEE/APM
+        // restore can write freely.
         nodes[node] = RegdmaLink::write(TEE_M4_MODE_CTRL_REG, 0, 0xFFFF_FFFF, true, false);
         node += 1;
 
@@ -824,8 +736,7 @@ mod sys_periph {
             node += 1;
         }
 
-        // PRI_5: console UART0. Same sequence as the opt-in path, built for the
-        // console base into this list's shared buffer.
+        // PRI_5: console UART0 (same sequence as the opt-in path).
         let mem = unsafe { buf_base.add(word) } as u32;
         build_uart_seq(UART0_BASE, &mut nodes[node..node + UART_NODE_COUNT], mem);
         word += UART_RETENTION_REGS_CNT as usize;
@@ -840,10 +751,9 @@ mod sys_periph {
         }
 
         // PRI_6: SysTimer. Backup latches each unit's counter (UPDATE + wait for
-        // VALUE_VALID) and reads the value; restore writes the value into the
-        // LOAD registers and triggers a load. The counter value is read from the
-        // VALUE_HI/LO registers but restored into the LOAD_HI/LO registers, so
-        // those CONTINUOUS nodes use split backup/restore addresses.
+        // VALUE_VALID) and reads it; restore loads it back and triggers a load.
+        // The value is read from VALUE_HI/LO but restored into LOAD_HI/LO, hence
+        // the split backup/restore addresses.
         let alloc = |len: u32, word: &mut usize| -> u32 {
             let mem = unsafe { buf_base.add(*word) } as u32;
             *word += len as usize;
@@ -892,8 +802,7 @@ mod sys_periph {
             nodes[node] = RegdmaLink::write(comp, ST_COMP_LOAD, ST_COMP_LOAD, true, false);
             node += 1;
         }
-        // Re-arm period mode: clear then set for target0/1, clear for target2
-        // (matches ESP-IDF's write sequence).
+        // Re-arm period mode: clear+set for target0/1, clear for target2.
         for target in [ST_TARGET0_CONF, ST_TARGET1_CONF] {
             nodes[node] = RegdmaLink::write(target, 0, ST_TARGET_PERIOD_MODE, true, false);
             node += 1;

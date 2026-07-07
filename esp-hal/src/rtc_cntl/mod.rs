@@ -124,17 +124,15 @@ use crate::{peripherals::RTC_TIMER, system::Cpu, time::Duration};
 #[cfg(sleep_driver_supported)]
 pub mod sleep;
 
-// Power-domain locks that keep a domain powered across light sleep without
-// preventing sleep itself.
+// Power-domain locks that keep a domain powered across light sleep.
 #[cfg(esp32c6)]
 pub(crate) mod power_domain;
 
-// regDMA/PAU-based register retention of the TOP power domain's peripherals
-// during light sleep.
+// regDMA-based register retention of the TOP domain's peripherals.
 #[cfg(esp32c6)]
 pub(crate) mod retention;
 
-// Software CPU-register retention for CPU power-down during light sleep.
+// Software CPU-register retention for CPU power-down.
 #[cfg(esp32c6)]
 pub mod cpu_retention;
 

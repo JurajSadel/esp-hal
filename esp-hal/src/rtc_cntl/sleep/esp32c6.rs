@@ -979,18 +979,15 @@ impl RtcSleepConfig {
             self.pd_flags.set_pd_rc_fast(true);
             self.pd_flags.set_pd_xtal32k(!lp_slow_uses_xtal32k);
 
-            // The pd_cpu/pd_top bits are only ever set here, and only when the
-            // caller provided the retention storage needed to restore the domain
-            // and no active peripheral holds a power-domain lock on it. Forcing
-            // them every time (overriding any manual `pd_flags`) means a domain
-            // can never be powered off without the storage to restore it;
-            // otherwise we fall back to clock-gating.
+            // Only power a domain down when the caller gave us the storage to
+            // restore it and no active peripheral holds a power-domain lock on
+            // it; otherwise fall back to clock-gating.
             use crate::rtc_cntl::power_domain::{Domain, can_power_down};
             let have_cpu_mem = !self.cpu_retention_mem.is_null();
             let have_sys_mem = !self.top_retention_mem.is_null();
 
-            // TOP power-down needs both the CPU frame buffer (TOP-pd implies
-            // CPU-pd on the C6) and the system-peripheral regDMA buffer.
+            // TOP-pd needs both the CPU frame buffer (TOP-pd implies CPU-pd on
+            // the C6) and the system-peripheral regDMA buffer.
             let top_pd = self.top_power_down
                 && have_cpu_mem
                 && have_sys_mem
