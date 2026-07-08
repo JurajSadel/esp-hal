@@ -1,12 +1,11 @@
 //! Register DMA (regDMA) based register retention (ESP32-C6).
 //!
 //! The PAU's regDMA engine backs peripheral registers up to RAM and restores
-//! them while the `TOP` domain is powered down in light sleep. It walks a linked
-//! list of [`RegdmaLink`] nodes over PAU entry link 0 with no CPU involvement.
+//! them while the `TOP` domain is powered down in light sleep, walking a linked
+//! list of [`RegdmaLink`] nodes on PAU entry link 0 with no CPU involvement.
 //! `sys_periph` builds the core register set into a caller-owned
 //! [`SystemRetentionMemory`]; [`enable_top_retention`] chains it with any opt-in
-//! peripheral entries before arming the link. Without a `SystemRetentionMemory`
-//! the `TOP` domain is only clock-gated.
+//! peripheral entries before arming the link. Without it `TOP` is clock-gated.
 //!
 //! References (ESP-IDF `v5.4`): `soc/regdma.h`, `hal/esp32c6/pau_ll.h`,
 //! `hal/esp32c6/pau_hal.c`, `esp_hw_support/port/pau_regdma.c`.
@@ -38,9 +37,9 @@ const HEAD_EOF_BIT: u32 = 1 << 31; // end of link
 enum LinkMode {
     /// Back up/restore a run of consecutive registers via a RAM buffer.
     Continuous = 0,
-    /// Back up/restore a run of registers via a RAM buffer, where a 4-word
-    /// bitmap selects which registers in the window are actually transferred
-    /// (skipping e.g. read-only status/FIFO registers interspersed in a block).
+    /// Like [`Continuous`](Self::Continuous), but a 4-word bitmap selects which
+    /// registers in the window to transfer (skipping interspersed read-only
+    /// status/FIFO registers).
     AddrMap    = 1,
     /// Unconditionally write a masked value to a register.
     Write      = 2,
@@ -108,8 +107,7 @@ impl RegdmaLink {
     }
 
     /// An ADDR_MAP node: back up/restore the `count` registers selected by `map`
-    /// (bit `i` = register at `reg + i * 4`) from `reg` into `storage`, skipping
-    /// interspersed read-only/FIFO registers.
+    /// (bit `i` = register at `reg + i * 4`) from `reg` into `storage`.
     fn addr_map(reg: u32, storage: u32, count: u32, map: [u32; 4]) -> Self {
         Self {
             head: Self::head(LinkMode::AddrMap, count, false, false),
@@ -410,9 +408,9 @@ peripheral_retention_memory!(
     UART_NODE_COUNT,
     UART_RETENTION_REGS_CNT as usize,
     build_uart_seq,
-    "Caller-owned backing store retaining one UART's config registers across a \
-`TOP` power-down. Passed to \
-[`Uart::with_retention_memory`](crate::uart::Uart::with_retention_memory); the \
+    "Caller-owned store retaining one UART's config registers across a `TOP` \
+power-down, passed to \
+[`Uart::with_retention_memory`](crate::uart::Uart::with_retention_memory). The \
 console/log UART is retained automatically."
 );
 
@@ -421,8 +419,8 @@ peripheral_retention_memory!(
     I2C_NODE_COUNT,
     I2C_RETENTION_REGS_CNT as usize,
     build_i2c_seq,
-    "Caller-owned backing store retaining one I2C's config registers across a \
-`TOP` power-down. Passed to \
+    "Caller-owned store retaining one I2C's config registers across a `TOP` \
+power-down, passed to \
 [`I2c::with_retention_memory`](crate::i2c::master::I2c::with_retention_memory). \
 See [`UartRetentionMemory`]."
 );
@@ -432,8 +430,8 @@ peripheral_retention_memory!(
     SPI_NODE_COUNT,
     SPI_RETENTION_REGS_CNT as usize,
     build_spi_seq,
-    "Caller-owned backing store retaining one SPI's config registers across a \
-`TOP` power-down. Passed to \
+    "Caller-owned store retaining one SPI's config registers across a `TOP` \
+power-down, passed to \
 [`Spi::with_retention_memory`](crate::spi::master::Spi::with_retention_memory). \
 See [`UartRetentionMemory`]."
 );
@@ -446,11 +444,10 @@ pub(crate) trait RetentionMemory {
     fn register(&mut self, base: u32) -> NonNull<RetentionNode>;
 }
 
-/// A `TOP`-domain peripheral driver's power-management state: either active and
-/// holding a [`PowerDomainLock`] (keeping `TOP` powered so it can't lose state,
-/// without preventing sleep), or retained (the lock is dropped and regDMA
-/// save/restores its config across a `TOP` power-down from `'d`-borrowed memory).
-/// Stored in the driver, so the user never juggles a separate guard.
+/// A `TOP`-domain driver's power state, stored in the driver: either active,
+/// holding a [`PowerDomainLock`] that keeps `TOP` powered (without preventing
+/// sleep), or retained, with the lock dropped and regDMA saving/restoring its
+/// config across a `TOP` power-down from `'d`-borrowed memory.
 pub(crate) enum PowerManagement<'d, M: RetentionMemory> {
     /// Active, not retained: the held lock keeps `TOP` powered.
     PowerDomainLock { _lock: PowerDomainLock },
@@ -587,10 +584,10 @@ pub(crate) fn enable_top_retention(mem: &mut SystemRetentionMemory) {
         .modify(|_, w| w.hp_sleep2active_backup_en().set_bit());
 }
 
-/// ESP32-C6 TOP-domain system-peripheral retention link: the register regions
-/// for the core system peripherals lost when `TOP` powers down, mirroring
-/// ESP-IDF's `SLEEP_RETENTION_MODULE_SYS_PERIPH` + `..._CLOCK_SYSTEM` in
-/// retention-priority order (system clock first).
+/// TOP-domain system-peripheral retention link: register regions for the core
+/// peripherals lost when `TOP` powers down, in retention-priority order (system
+/// clock first). Mirrors ESP-IDF's `SLEEP_RETENTION_MODULE_SYS_PERIPH` +
+/// `..._CLOCK_SYSTEM`.
 ///
 /// References (ESP-IDF `v5.4`): `soc/esp32c6/system_retention_periph.c`,
 /// `esp_hw_support/.../sleep_clock.c`, `esp_hw_support/sleep_system_peripheral.c`.

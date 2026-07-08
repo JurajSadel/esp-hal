@@ -1,30 +1,23 @@
 //! CPU power-down retention during light sleep (ESP32-C6).
 //!
-//! During light sleep the C6 can power down the CPU domain (`pd_cpu`) while the
-//! rest of the digital system stays powered, losing all CPU state. The register
-//! file and CSRs aren't reachable by regDMA, so (like ESP-IDF's
-//! `esp_sleep_cpu_retention()`) they are saved/restored in software. The ~1 KiB
-//! backing RAM ([`CpuRetentionMemory`]) is caller-owned and opt-in via
-//! [`RtcSleepConfig::with_cpu_power_down`]; without it the CPU is only
-//! clock-gated.
+//! When the C6 powers down `pd_cpu` in light sleep the CPU loses all state.
+//! regDMA can't reach the register file/CSRs, so they are saved/restored in
+//! software (like ESP-IDF's `esp_sleep_cpu_retention()`). Backing RAM
+//! ([`CpuRetentionMemory`]) is caller-owned, opt-in via
+//! [`RtcSleepConfig::with_cpu_power_down`]; without it the CPU is clock-gated.
 //!
 //! [`RtcSleepConfig::with_cpu_power_down`]: crate::rtc_cntl::sleep::RtcSleepConfig::with_cpu_power_down
 //!
-//! Save/restore is in three parts, matching ESP-IDF:
+//! Save/restore has three parts: critical registers (GP + machine CSRs) in
+//! assembly via a setjmp/longjmp-style trick; non-critical CSRs via `csrr`/
+//! `csrw`; and CPU-domain device registers (`INTPRI`, `PLIC`/`CLINT`, cache).
 //!
-//! 1. **Critical registers** (GP registers + `mepc`/`mstatus`/`mtvec`/...):
-//!    saved/restored in assembly via a `setjmp`/`longjmp`-style trick - on
-//!    wakeup the ROM jumps to the restore routine, which returns as if save had.
-//! 2. **Non-critical CSRs** (PMP/PMA, trigger module, perf counters, ...): via
-//!    `csrr`/`csrw`.
-//! 3. **CPU-domain device registers** (`INTPRI`, `PLIC`/`CLINT`, L1 cache).
+//! Everything runs from IRAM (`.rwtext`): the ROM jumps to the wake stub with
+//! the flash cache lost, so every function is `#[ram]` and must not call
+//! flash-resident code until the cache config is restored.
 //!
-//! The whole path runs from IRAM (`.rwtext`): the ROM jumps to the wake stub in
-//! `LP_AON_STORE8` with the flash cache lost, so every function here is `#[ram]`
-//! and must not call flash-resident code until the cache config is restored.
-//!
-//! References (ESP-IDF `v5.4`, ESP32-C6): `esp_hw_support/.../esp32c6/`
-//! `sleep_cpu.c`, `sleep_cpu_asm.S`, `include/rvsleep-frames.h`.
+//! Ported from ESP-IDF `v5.4` `esp32c6` `sleep_cpu.c`, `sleep_cpu_asm.S`,
+//! `rvsleep-frames.h`.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -32,19 +25,16 @@ use procmacros::ram;
 
 use crate::peripherals::{LP_AON, PMU};
 
-/// Caller-owned backing store for TOP-domain system-peripheral retention.
-///
-/// Re-exported here because it is the second buffer required by
+/// Second buffer required by
 /// [`RtcSleepConfig::with_top_power_down`](crate::rtc_cntl::sleep::RtcSleepConfig::with_top_power_down).
 #[instability::unstable]
 pub use crate::rtc_cntl::retention::SystemRetentionMemory;
 
-/// Bumped from the ROM wake stub, i.e. only when the CPU domain actually lost
-/// and regained power (not on a rejected or clock-gated sleep).
+/// Incremented only when the CPU domain actually lost and regained power.
 static CPU_POWERDOWN_WAKES: AtomicU32 = AtomicU32::new(0);
 
 /// How many times the CPU power domain was actually powered down and restored.
-/// A diagnostic: if it rises across light sleeps, the CPU genuinely lost power.
+/// Diagnostic: rises across light sleeps only if the CPU genuinely lost power.
 #[instability::unstable]
 pub fn cpu_power_down_wake_count() -> u32 {
     CPU_POWERDOWN_WAKES.load(Ordering::Relaxed)
@@ -54,8 +44,8 @@ pub fn cpu_power_down_wake_count() -> u32 {
 // Critical register frame (RvCoreCriticalSleepFrame)
 // ---------------------------------------------------------------------------
 
-// A raw word buffer addressed by byte offset (`RV_SLP_CTX_*`) from the assembly
-// below; layout matches ESP-IDF's `rvsleep-frames.h`:
+// Word buffer addressed by byte offset (`RV_SLP_CTX_*`) from the assembly below;
+// layout matches ESP-IDF's `rvsleep-frames.h`:
 //
 //   0: mepc     1: ra       2: sp       3: gp       4: tp
 //   5: t0       6: t1       7: t2       8: s0       9: s1
@@ -71,11 +61,11 @@ const PMUFUNC_WORD: usize = 38;
 static mut RV_CORE_CRITICAL_REGS_FRAME: *mut u32 = core::ptr::null_mut();
 
 unsafe extern "C" {
-    /// Save the CPU critical registers into `RV_CORE_CRITICAL_REGS_FRAME`, mark
-    /// the frame "going to sleep", and return the frame pointer.
+    /// Save the critical registers into `RV_CORE_CRITICAL_REGS_FRAME`, mark the
+    /// frame "going to sleep", and return the frame pointer.
     fn rv_core_critical_regs_save() -> *mut u32;
-    /// Restore the CPU critical registers. Used as the ROM wake stub: returns as
-    /// if [`rv_core_critical_regs_save`] had just returned.
+    /// Restore the critical registers. Used as the ROM wake stub: returns as if
+    /// [`rv_core_critical_regs_save`] had just returned.
     fn rv_core_critical_regs_restore() -> *mut u32;
 }
 
@@ -285,11 +275,10 @@ unsafe fn write_csr<const CSR: u32>(value: u32) {
     }
 }
 
-/// Define the non-critical CSRs to retain from one canonical list, generating
-/// the slot count and the save/restore routines so they can't drift. Order
-/// mirrors `rv_core_noncritical_regs_{save,restore}()` in ESP-IDF `sleep_cpu.c`.
-/// `$name` is documentation only; the CSR is addressed by number so the custom
-/// Espressif CSRs work without assembler support.
+/// Generate the slot count and save/restore routines for the non-critical CSRs
+/// from one list, in ESP-IDF `sleep_cpu.c` order. `$name` is documentation
+/// only; CSRs are addressed by number so custom Espressif CSRs need no assembler
+/// support.
 macro_rules! noncritical_csrs {
     ($($name:ident = $csr:literal),+ $(,)?) => {
         /// Non-critical CSR slot count; sizes the `noncritical` field.
@@ -512,11 +501,10 @@ unsafe fn restore_mstatus(mstatus: u32) {
     }
 }
 
-/// Save the CPU critical registers, program the wake stub, request sleep and
-/// spin until the PMU reports wakeup or rejection. Mirrors ESP-IDF's
-/// `do_cpu_retention()`: the save pass (`pmufunc & 0x3 == 1`) triggers sleep; on
-/// wakeup the ROM jumps to the restore routine, which returns here with
-/// `pmufunc & 0x3 == 3`.
+/// Save critical registers, program the wake stub and request sleep, spinning
+/// until wakeup or rejection (ESP-IDF `do_cpu_retention()`). The save pass
+/// (`pmufunc & 0x3 == 1`) sleeps; on wakeup the ROM jumps to the restore
+/// routine, which returns here with `pmufunc & 0x3 == 3`.
 #[ram]
 fn do_cpu_retention() {
     let frame = unsafe { rv_core_critical_regs_save() };
@@ -545,14 +533,13 @@ fn do_cpu_retention() {
     }
 }
 
-/// Perform a full CPU-power-down light sleep with software register retention
-/// (ESP-IDF's `esp_sleep_cpu_retention()`). Only adds the save/restore around
-/// the sleep trigger; the PMU sleep config must already be programmed.
+/// CPU-power-down light sleep with software register retention (ESP-IDF's
+/// `esp_sleep_cpu_retention()`), wrapping the sleep trigger in save/restore.
 ///
 /// # Safety
 ///
-/// The PMU must already be configured for a `pd_cpu` light sleep and stopping
-/// the CPU must be safe. `mem` must stay valid across the sleep.
+/// The PMU must already be configured for a `pd_cpu` light sleep, stopping the
+/// CPU must be safe, and `mem` must stay valid across the sleep.
 #[ram]
 pub(crate) unsafe fn sleep_with_cpu_retention(mem: &mut CpuRetentionMemory) {
     unsafe {

@@ -47,7 +47,7 @@ mod version;
 pub(super) struct SpiWrapper<'d> {
     pub(super) spi: AnySpi<'d>,
     _guard: PeripheralGuard,
-    // Active keeps `TOP` powered; `Spi::with_retention_memory` swaps to retained.
+    // Active keeps `TOP` powered; `with_retention_memory` swaps to retained.
     #[cfg(esp32c6)]
     pub(super) power: crate::rtc_cntl::retention::PowerManagement<
         'd,

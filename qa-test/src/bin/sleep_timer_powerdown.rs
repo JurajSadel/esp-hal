@@ -1,23 +1,22 @@
 //! Timer-woken light sleep with the CPU/TOP power domains powered down.
 //!
 //! Three policies for the same timer wakeup: clock-gated (plain light sleep),
-//! cpu-powerdown ([`with_cpu_power_down`], CPU state saved in software) and
-//! top-powerdown ([`with_top_power_down`], whole `TOP` domain off via regDMA;
-//! also powers the CPU down on the C6). Each round prints the time slept and
-//! [`cpu_power_down_wake_count`], which only advances when the CPU lost power.
+//! cpu-powerdown (CPU state saved in software) and top-powerdown (whole `TOP`
+//! domain off via regDMA, also powering the CPU down). Each round prints the
+//! time slept and `cpu_power_down_wake_count`, which advances only when the CPU
+//! lost power.
 //!
 //! It also proves the design end to end:
 //!
-//! - **Negative control**: an un-retained `TOP` register (I2C0 `SCL_LOW_PERIOD`) survives a
-//!   clock-gated sleep; once its driver is dropped (releasing the power-domain lock that would
-//!   otherwise block the power-down) a `top-powerdown` wipes it and the CPU-power-down counter
-//!   advances - direct evidence the domain lost power.
-//! - **Safety net**: while UART1 is active and un-retained it holds a `TOP` power-domain lock, so
+//! - **Negative control**: an un-retained `TOP` register (I2C0 `SCL_LOW_PERIOD`)
+//!   survives a clock-gated sleep, but once its driver is dropped a
+//!   `top-powerdown` wipes it and the counter advances - the domain lost power.
+//! - **Safety net**: an active, un-retained UART1 holds a `TOP` lock, so
 //!   `top-powerdown` degrades to clock-gating (the counter stays put).
-//! - **Opt-in retention**: UART1/I2C0/SPI2 are retained, then a config register of each is
-//!   confirmed to survive `top-powerdown`.
+//! - **Opt-in retention**: UART1/I2C0/SPI2 are retained and a config register of
+//!   each is confirmed to survive `top-powerdown`.
 //!
-//! GPIO5 is high while awake, low while asleep, to bracket each sleep for a
+//! GPIO5 is high while awake, low while asleep, to bracket each sleep on a
 //! current meter / logic analyzer.
 
 //% CHIP_FILTER: esp32c6
@@ -111,10 +110,8 @@ fn main() -> ! {
     println!("up and running!");
 
     // Negative control: I2C0's SCL_LOW_PERIOD (a TOP register) survives a
-    // clock-gated sleep, but once its driver is dropped a top-powerdown wipes
-    // it. A live driver holds a TOP power-domain lock (see the safety net
-    // below), so it has to be released first for the domain to actually power
-    // down - which is exactly what proves the domain lost power.
+    // clock-gated sleep, but once its driver is dropped (releasing its TOP lock)
+    // a top-powerdown wipes it - proof the domain lost power.
     const I2C0_SCL_LOW_PERIOD: *const u32 = 0x6000_4000 as *const u32;
     let i2c0 = I2c::new(peripherals.I2C0, I2cConfig::default()).unwrap();
     // SAFETY: driver alive, register readable.
@@ -129,8 +126,7 @@ fn main() -> ! {
     // Read while the driver is still alive (TOP stayed powered, so it survives).
     let scl_after_clock_gate = unsafe { I2C0_SCL_LOW_PERIOD.read_volatile() };
 
-    // Drop the driver so its TOP power-domain lock is released and the domain can
-    // actually power down (nothing else holds one yet).
+    // Drop the driver so its TOP lock is released and the domain can power down.
     core::mem::drop(i2c0);
 
     let downs_before_nc = cpu_power_down_wake_count();
@@ -169,8 +165,8 @@ fn main() -> ! {
         downs_after_nc
     );
 
-    // UART1 is live but not yet retained, so it holds a TOP power-domain lock:
-    // top-powerdown must degrade to clock-gating (counter must not advance).
+    // UART1 is live but not retained, so it holds a TOP lock: top-powerdown must
+    // degrade to clock-gating (counter must not advance).
     const UART1_CLKDIV: *const u32 = 0x6000_1014 as *const u32;
     let uart1 = Uart::new(peripherals.UART1, UartConfig::default()).unwrap();
 
@@ -198,8 +194,8 @@ fn main() -> ! {
         }
     );
 
-    // Retain UART1: drops the lock and stores the memory in the driver, so its
-    // registers are saved/restored around the power-down. Kept alive for the proof.
+    // Retain UART1: drops the lock so its registers are saved/restored around the
+    // power-down. Kept alive for the proof.
     let _uart1 =
         uart1.with_retention_memory(mk_static!(UartRetentionMemory, UartRetentionMemory::new()));
     // SAFETY: driver alive, register readable.
