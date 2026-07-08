@@ -1,4 +1,4 @@
-//! Register DMA (regDMA) based register retention (ESP32-C6).
+//! Register DMA (regDMA) based register retention.
 //!
 //! The PAU's regDMA engine backs peripheral registers up to RAM and restores
 //! them while the `TOP` domain is powered down in light sleep, walking a linked
@@ -6,9 +6,16 @@
 //! `sys_periph` builds the core register set into a caller-owned
 //! [`SystemRetentionMemory`]; [`enable_top_retention`] chains it with any opt-in
 //! peripheral entries before arming the link. Without it `TOP` is clock-gated.
+//!
+//! Everything in this file is chip-agnostic: the PAU/regDMA node format and the
+//! peripheral save/restore sequences are shared by every regDMA-capable chip.
+//! The only per-chip input is the register data (base addresses, region sizes
+//! and the exact SYS_PERIPH program), which lives in the [`chip`] submodule -
+//! one small data file per chip (see `retention/esp32c6.rs`). Adding a chip is
+//! therefore a matter of adding a sibling data file, not touching this logic.
 
-// References (ESP-IDF `v5.4`): `soc/regdma.h`, `hal/esp32c6/pau_ll.h`,
-// `hal/esp32c6/pau_hal.c`, `esp_hw_support/port/pau_regdma.c`.
+// References (ESP-IDF `v5.4`): `soc/regdma.h`, `hal/<chip>/pau_ll.h`,
+// `hal/<chip>/pau_hal.c`, `esp_hw_support/port/pau_regdma.c`.
 
 use core::{
     marker::PhantomData,
@@ -22,6 +29,13 @@ use crate::{
     peripherals::{PAU, PCR, PMU},
     rtc_cntl::power_domain::{Domain, PowerDomainLock},
 };
+
+// Per-chip register data (base addresses, region sizes, the SYS_PERIPH program
+// and the CPU-domain device-register bases). Selected by target; consumed by the
+// chip-agnostic logic here and in `cpu_retention`.
+#[cfg_attr(esp32c6, path = "retention/esp32c6.rs")]
+#[cfg_attr(esp32h2, path = "retention/esp32h2.rs")]
+pub(crate) mod chip;
 
 // Bit layout of `regdma_link_head_t` (see ESP-IDF `regdma.h`):
 // https://github.com/espressif/esp-idf/blob/v5.4/components/soc/include/soc/regdma.h#L114-L123
@@ -518,9 +532,175 @@ impl<M: RetentionMemory> defmt::Format for PowerManagement<'_, M> {
     }
 }
 
-/// Caller-owned backing store for the ESP32-C6 TOP-domain system-peripheral
-/// register set (PCR, interrupt matrix, HP system, TEE/APM, IO MUX, GPIO matrix,
-/// flash SPI mem, console UART and SysTimer).
+/// A single step in a chip's TOP-domain SYS_PERIPH retention program.
+///
+/// A chip describes its core retention as an ordered list of these (its
+/// [`chip::OPS`]); [`sys_periph::build_link`] turns that list into PAU regDMA
+/// nodes. Everything but the list itself is chip-agnostic, so each chip only
+/// supplies data - never build logic.
+///
+/// `Write`/`Wait` are always restore-only (they re-apply state the backup can't
+/// capture, e.g. unlocking TEE/APM or pulsing a clock-update bit on wakeup),
+/// matching the only ways ESP-IDF uses them in the SYS_PERIPH tables.
+// Which variants a chip uses is data-dependent (e.g. only the H2 needs `Wait`),
+// so an unused variant on a given target is expected, not dead code.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) enum SysOp {
+    /// Back up/restore `count` consecutive registers starting at `base`.
+    Continuous { base: u32, count: u32 },
+    /// Restore-only masked write of `value` to `addr`.
+    Write { addr: u32, value: u32, mask: u32 },
+    /// Restore-only poll of `addr` until `(reg & mask) == value`.
+    Wait { addr: u32, value: u32, mask: u32 },
+    /// The shared console-UART config sequence for the UART based at `base`.
+    Uart { base: u32 },
+    /// The shared SysTimer save/restore sequence based at `base`.
+    Systimer { base: u32 },
+}
+
+/// PAU nodes emitted for one [`SysOp`].
+const fn op_nodes(op: &SysOp) -> usize {
+    match op {
+        SysOp::Continuous { .. } | SysOp::Write { .. } | SysOp::Wait { .. } => 1,
+        SysOp::Uart { .. } => UART_NODE_COUNT,
+        SysOp::Systimer { .. } => SYSTIMER_NODE_COUNT,
+    }
+}
+
+/// RAM buffer words consumed by one [`SysOp`].
+const fn op_words(op: &SysOp) -> usize {
+    match op {
+        SysOp::Continuous { count, .. } => *count as usize,
+        SysOp::Uart { .. } => UART_RETENTION_REGS_CNT as usize,
+        SysOp::Systimer { .. } => SYSTIMER_CONT_WORDS,
+        SysOp::Write { .. } | SysOp::Wait { .. } => 0,
+    }
+}
+
+/// Total PAU nodes an op list expands to (sizes [`SystemRetentionMemory`]).
+pub(crate) const fn ops_node_count(ops: &[SysOp]) -> usize {
+    let mut n = 0;
+    let mut i = 0;
+    while i < ops.len() {
+        n += op_nodes(&ops[i]);
+        i += 1;
+    }
+    n
+}
+
+/// Total RAM buffer words an op list needs (sizes [`SystemRetentionMemory`]).
+pub(crate) const fn ops_buf_words(ops: &[SysOp]) -> usize {
+    let mut w = 0;
+    let mut i = 0;
+    while i < ops.len() {
+        w += op_words(&ops[i]);
+        i += 1;
+    }
+    w
+}
+
+// SysTimer register offsets and bit masks (shared; only the base differs per
+// chip). Offsets/masks from ESP-IDF v5.4 `systimer_reg.h`; the save/restore
+// sequence mirrors `systimer_regs_retention[]`.
+const ST_UNIT_UPDATE: u32 = 1 << 30;
+const ST_UNIT_VALUE_VALID: u32 = 1 << 29;
+const ST_UNIT_LOAD: u32 = 1 << 0;
+const ST_COMP_LOAD: u32 = 1 << 0;
+const ST_TARGET_PERIOD_MODE: u32 = 1 << 30;
+/// TARGET0_HI ..= TARGET2_CONF, i.e. all three targets' hi/lo/conf.
+const ST_TARGETS_LEN: u32 = 9;
+/// One node per SysTimer step of `build_systimer_seq`.
+const SYSTIMER_NODE_COUNT: usize = 19;
+/// SysTimer CONTINUOUS words: unit0/1 value (2+2), targets (9), conf, int_ena.
+const SYSTIMER_CONT_WORDS: usize = 2 + 2 + ST_TARGETS_LEN as usize + 1 + 1;
+
+/// Build the SysTimer retention sequence for the timer at `base` into `nodes`,
+/// drawing its RAM from `buf_base` starting at word `start_word`. Fills exactly
+/// [`SYSTIMER_NODE_COUNT`] nodes and consumes [`SYSTIMER_CONT_WORDS`] words.
+///
+/// Backup latches each unit's counter (UPDATE + wait for VALUE_VALID) and reads
+/// it; restore loads it back and triggers a load. The value is read from
+/// VALUE_HI/LO but restored into LOAD_HI/LO, hence the split backup/restore
+/// addresses.
+fn build_systimer_seq(base: u32, nodes: &mut [RegdmaLink], buf_base: *mut u32, start_word: usize) {
+    let st_conf = base; // +0x00
+    let st_unit0_op = base + 0x04;
+    let st_unit1_op = base + 0x08;
+    let st_unit0_load_hi = base + 0x0C;
+    let st_unit1_load_hi = base + 0x14;
+    let st_target0_hi = base + 0x1C;
+    let st_target0_conf = base + 0x34;
+    let st_target1_conf = base + 0x38;
+    let st_target2_conf = base + 0x3C;
+    let st_unit0_value_hi = base + 0x40;
+    let st_unit1_value_hi = base + 0x48;
+    let st_comp0_load = base + 0x50;
+    let st_comp1_load = base + 0x54;
+    let st_comp2_load = base + 0x58;
+    let st_unit0_load = base + 0x5C;
+    let st_unit1_load = base + 0x60;
+    let st_int_ena = base + 0x64;
+
+    let mut word = start_word;
+    let mut alloc = |len: u32| -> u32 {
+        let mem = unsafe { buf_base.add(word) } as u32;
+        word += len as usize;
+        mem
+    };
+
+    let mut node = 0;
+
+    // Per unit: latch + read value, then restore into load.
+    for (op, value_hi, load_hi, load) in [
+        (st_unit0_op, st_unit0_value_hi, st_unit0_load_hi, st_unit0_load),
+        (st_unit1_op, st_unit1_value_hi, st_unit1_load_hi, st_unit1_load),
+    ] {
+        nodes[node] = RegdmaLink::write(op, ST_UNIT_UPDATE, ST_UNIT_UPDATE, false, true);
+        node += 1;
+        nodes[node] = RegdmaLink::wait(op, ST_UNIT_VALUE_VALID, ST_UNIT_VALUE_VALID, false, true);
+        node += 1;
+        let mem = alloc(2);
+        nodes[node] = RegdmaLink::continuous_split(value_hi, load_hi, mem, 2);
+        node += 1;
+        nodes[node] = RegdmaLink::write(load, ST_UNIT_LOAD, ST_UNIT_LOAD, true, false);
+        node += 1;
+    }
+
+    // Comparator target values & periods.
+    let mem = alloc(ST_TARGETS_LEN);
+    nodes[node] = RegdmaLink::continuous(st_target0_hi, mem, ST_TARGETS_LEN);
+    node += 1;
+    for comp in [st_comp0_load, st_comp1_load, st_comp2_load] {
+        nodes[node] = RegdmaLink::write(comp, ST_COMP_LOAD, ST_COMP_LOAD, true, false);
+        node += 1;
+    }
+    // Re-arm period mode: clear+set for target0/1, clear for target2.
+    for target in [st_target0_conf, st_target1_conf] {
+        nodes[node] = RegdmaLink::write(target, 0, ST_TARGET_PERIOD_MODE, true, false);
+        node += 1;
+        nodes[node] =
+            RegdmaLink::write(target, ST_TARGET_PERIOD_MODE, ST_TARGET_PERIOD_MODE, true, false);
+        node += 1;
+    }
+    nodes[node] = RegdmaLink::write(st_target2_conf, 0, ST_TARGET_PERIOD_MODE, true, false);
+    node += 1;
+
+    // Work-enable and interrupt-enable state.
+    let mem = alloc(1);
+    nodes[node] = RegdmaLink::continuous(st_conf, mem, 1);
+    node += 1;
+    let mem = alloc(1);
+    nodes[node] = RegdmaLink::continuous(st_int_ena, mem, 1);
+    node += 1;
+
+    debug_assert!(node == SYSTIMER_NODE_COUNT);
+    debug_assert!(word - start_word == SYSTIMER_CONT_WORDS);
+}
+
+/// Caller-owned backing store for the TOP-domain system-peripheral register set
+/// (PCR, interrupt matrix, HP system, TEE/APM, IO MUX, GPIO matrix, flash SPI
+/// mem, console UART and SysTimer - see the chip's [`chip::OPS`]).
 ///
 /// The core state regDMA must retain for the `TOP` domain to power down at all;
 /// the caller opts in via [`RtcSleepConfig::with_top_power_down`]. Individual
@@ -532,8 +712,8 @@ impl<M: RetentionMemory> defmt::Format for PowerManagement<'_, M> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(C, align(4))]
 pub struct SystemRetentionMemory {
-    nodes: [RegdmaLink; sys_periph::NODE_COUNT],
-    buf: [u32; sys_periph::BUF_WORDS],
+    nodes: [RegdmaLink; ops_node_count(chip::OPS)],
+    buf: [u32; ops_buf_words(chip::OPS)],
 }
 
 #[instability::unstable]
@@ -548,8 +728,8 @@ impl SystemRetentionMemory {
     #[instability::unstable]
     pub const fn new() -> Self {
         Self {
-            nodes: [RegdmaLink::EMPTY; sys_periph::NODE_COUNT],
-            buf: [0; sys_periph::BUF_WORDS],
+            nodes: [RegdmaLink::EMPTY; ops_node_count(chip::OPS)],
+            buf: [0; ops_buf_words(chip::OPS)],
         }
     }
 }
@@ -590,302 +770,88 @@ pub(crate) fn enable_top_retention(mem: &mut SystemRetentionMemory) {
         .modify(|_, w| w.hp_sleep2active_backup_en().set_bit());
 }
 
-/// TOP-domain system-peripheral retention link: register regions for the core
-/// peripherals lost when `TOP` powers down, in retention-priority order (system
-/// clock first).
+/// TOP-domain system-peripheral retention link: the chip-agnostic interpreter
+/// that expands a chip's [`chip::OPS`] program into PAU regDMA nodes, in
+/// retention-priority order (system clock first). All per-chip register data
+/// lives in [`chip::OPS`]; this code is shared by every regDMA-capable chip.
 // Mirrors ESP-IDF's `SLEEP_RETENTION_MODULE_SYS_PERIPH` + `..._CLOCK_SYSTEM`.
-// References (ESP-IDF `v5.4`): `soc/esp32c6/system_retention_periph.c`,
+// References (ESP-IDF `v5.4`): `soc/<chip>/system_retention_periph.c`,
 // `esp_hw_support/.../sleep_clock.c`, `esp_hw_support/sleep_system_peripheral.c`.
 mod sys_periph {
     use super::{
         HEAD_LENGTH_MASK,
         RegdmaLink,
+        SYSTIMER_NODE_COUNT,
+        SysOp,
         UART_NODE_COUNT,
         UART_RETENTION_REGS_CNT,
+        build_systimer_seq,
         build_uart_seq,
+        chip,
     };
 
-    /// TEE mode-control register, rewritten early on restore to unlock access.
-    const TEE_M4_MODE_CTRL_REG: u32 = 0x6009_8010;
+    /// Nodes this chip's op list expands to (sizes [`super::SystemRetentionMemory`]).
+    pub(super) const NODE_COUNT: usize = super::ops_node_count(chip::OPS);
 
-    /// A run of `count` consecutive 32-bit registers starting at `base`.
-    struct ContRegion {
-        base: u32,
-        count: u32,
-    }
-
-    /// Continuous register regions to retain, in retention-priority order. The
-    /// sizing end register is noted per region; `count = ((end - base) / 4) + 1`.
-    const CONT_REGIONS: &[ContRegion] = &[
-        // PRI_0 - system clock/reset (PCR)
-        ContRegion {
-            base: 0x6009_6000,
-            count: 79,
-        }, // PCR base ..= PCR_SRAM_POWER_CONF_REG (+0x138)
-        ContRegion {
-            base: 0x6009_6FF0,
-            count: 1,
-        }, // PCR_RESET_EVENT_BYPASS_REG
-        // PRI_4 - TEE/APM
-        ContRegion {
-            base: 0x6009_9000,
-            count: 68,
-        }, // HP_APM base ..= HP_APM_CLOCK_GATE_REG (+0x10c)
-        ContRegion {
-            base: 0x6009_8000,
-            count: 33,
-        }, // TEE base ..= TEE_CLOCK_GATE_REG (+0x80)
-        // PRI_5 - interrupt matrix + HP system
-        ContRegion {
-            base: 0x6001_0000,
-            count: 81,
-        }, // INTMTX base ..= INTMTX_CORE0_CLOCK_GATE_REG (+0x140)
-        ContRegion {
-            base: 0x6009_5000,
-            count: 18,
-        }, // HP_SYSTEM base ..= HP_SYSTEM_MEM_TEST_CONF_REG (+0x44)
-        // PRI_6 - IO MUX + GPIO matrix
-        ContRegion {
-            base: 0x6009_0000,
-            count: 32,
-        }, // IO_MUX base ..= IO_MUX_GPIO30_REG (+0x7c)
-        ContRegion {
-            base: 0x6009_1554,
-            count: 35,
-        }, // GPIO_FUNC0_OUT_SEL ..= GPIO_FUNC34_OUT_SEL
-        ContRegion {
-            base: 0x6009_114C,
-            count: 127,
-        }, // GPIO_STATUS_NEXT ..= GPIO_FUNC124_IN_SEL
-        ContRegion {
-            base: 0x6009_1000,
-            count: 64,
-        }, // GPIO base ..= GPIO_PIN34_REG (+0xfc)
-        // PRI_6 - Flash SPI mem (SPIMEM1 then SPIMEM0). MMU content/index
-        // registers are intentionally excluded (see ESP-IDF note).
-        ContRegion {
-            base: 0x6000_3000,
-            count: 55,
-        }, // SPIMEM1 base ..= SPI_MEM_SPI_SMEM_DDR (+0xd8)
-        ContRegion {
-            base: 0x6000_3100,
-            count: 41,
-        }, // SPIMEM1 FMEM_PMS0_ATTR ..= SMEM_AC (+0x1a0)
-        ContRegion {
-            base: 0x6000_3200,
-            count: 1,
-        }, // SPIMEM1 CLOCK_GATE
-        ContRegion {
-            base: 0x6000_3384,
-            count: 31,
-        }, // SPIMEM1 MMU_POWER_CTRL ..= DATE (+0x3fc)
-        ContRegion {
-            base: 0x6000_2000,
-            count: 55,
-        }, // SPIMEM0 base ..= SPI_MEM_SPI_SMEM_DDR
-        ContRegion {
-            base: 0x6000_2100,
-            count: 41,
-        }, // SPIMEM0 FMEM_PMS0_ATTR ..= SMEM_AC
-        ContRegion {
-            base: 0x6000_2200,
-            count: 1,
-        }, // SPIMEM0 CLOCK_GATE
-        ContRegion {
-            base: 0x6000_2384,
-            count: 31,
-        }, // SPIMEM0 MMU_POWER_CTRL ..= DATE
-    ];
-
-    /// [`CONT_REGIONS`] index where TEE/APM (PRI_4) starts; the PRI_2 TEE WRITE
-    /// node is inserted just before it.
-    const TEE_APM_START: usize = 2;
-
-    /// [`CONT_REGIONS`] index where IO MUX/GPIO (PRI_6) starts; the console-UART
-    /// (PRI_5) nodes are inserted just before it.
-    const IOMUX_START: usize = 6;
-
-    const fn total_words() -> usize {
-        let mut words = 0;
-        let mut i = 0;
-        while i < CONT_REGIONS.len() {
-            words += CONT_REGIONS[i].count as usize;
-            i += 1;
-        }
-        words
-    }
-
-    /// Console UART0 base, retained automatically via [`build_uart_seq`].
-    const UART0_BASE: u32 = 0x6000_0000;
-
-    // SysTimer. Offsets/masks from ESP-IDF v5.4 `systimer_reg.h`; sequence from
-    // `systimer_regs_retention[]`.
-    const ST_BASE: u32 = 0x6000_A000;
-    const ST_CONF: u32 = ST_BASE; // +0x00
-    const ST_UNIT0_OP: u32 = ST_BASE + 0x04;
-    const ST_UNIT1_OP: u32 = ST_BASE + 0x08;
-    const ST_UNIT0_LOAD_HI: u32 = ST_BASE + 0x0C;
-    const ST_UNIT1_LOAD_HI: u32 = ST_BASE + 0x14;
-    const ST_TARGET0_HI: u32 = ST_BASE + 0x1C;
-    const ST_TARGET0_CONF: u32 = ST_BASE + 0x34;
-    const ST_TARGET1_CONF: u32 = ST_BASE + 0x38;
-    const ST_TARGET2_CONF: u32 = ST_BASE + 0x3C;
-    const ST_UNIT0_VALUE_HI: u32 = ST_BASE + 0x40;
-    const ST_UNIT1_VALUE_HI: u32 = ST_BASE + 0x48;
-    const ST_COMP0_LOAD: u32 = ST_BASE + 0x50;
-    const ST_COMP1_LOAD: u32 = ST_BASE + 0x54;
-    const ST_COMP2_LOAD: u32 = ST_BASE + 0x58;
-    const ST_UNIT0_LOAD: u32 = ST_BASE + 0x5C;
-    const ST_UNIT1_LOAD: u32 = ST_BASE + 0x60;
-    const ST_INT_ENA: u32 = ST_BASE + 0x64;
-    const ST_UNIT_UPDATE: u32 = 1 << 30;
-    const ST_UNIT_VALUE_VALID: u32 = 1 << 29;
-    const ST_UNIT_LOAD: u32 = 1 << 0;
-    const ST_COMP_LOAD: u32 = 1 << 0;
-    const ST_TARGET_PERIOD_MODE: u32 = 1 << 30;
-    /// TARGET0_HI ..= TARGET2_CONF, i.e. all three targets' hi/lo/conf.
-    const ST_TARGETS_LEN: u32 = 9;
-
-    const SYSTIMER_NODE_COUNT: usize = 19;
-    /// SysTimer CONTINUOUS words: unit0/1 value (2+2), targets (9), conf, int_ena.
-    const SYSTIMER_CONT_WORDS: usize = 2 + 2 + ST_TARGETS_LEN as usize + 1 + 1;
-
-    /// One node per continuous region + TEE WRITE + console UART + SysTimer.
-    pub(super) const NODE_COUNT: usize =
-        CONT_REGIONS.len() + 1 + UART_NODE_COUNT + SYSTIMER_NODE_COUNT;
-    pub(super) const BUF_WORDS: usize =
-        total_words() + UART_RETENTION_REGS_CNT as usize + SYSTIMER_CONT_WORDS;
-
-    // Every region count must fit the 10-bit node `length` field.
+    // Every CONTINUOUS region count must fit the 10-bit node `length` field.
     const _: () = {
         let mut i = 0;
-        while i < CONT_REGIONS.len() {
-            core::assert!(CONT_REGIONS[i].count <= HEAD_LENGTH_MASK);
+        while i < chip::OPS.len() {
+            if let SysOp::Continuous { count, .. } = chip::OPS[i] {
+                core::assert!(count <= HEAD_LENGTH_MASK);
+            }
             i += 1;
         }
     };
 
-    /// (Re)build the SYS_PERIPH retention list into `nodes`/`buf` and return the
-    /// filled node slice.
+    /// (Re)build the SYS_PERIPH retention list into `nodes`/`buf` by walking the
+    /// chip's [`chip::OPS`] program, and return the filled node slice.
     pub(super) fn build_link<'a>(
         nodes: &'a mut [RegdmaLink; NODE_COUNT],
-        buf: &mut [u32; BUF_WORDS],
+        buf: &mut [u32],
     ) -> &'a mut [RegdmaLink] {
         let buf_base = buf.as_mut_ptr();
 
         let mut node = 0;
         let mut word = 0;
 
-        // PRI_0: system clock (PCR).
-        for region in &CONT_REGIONS[..TEE_APM_START] {
-            let mem = unsafe { buf_base.add(word) } as u32;
-            nodes[node] = RegdmaLink::continuous(region.base, mem, region.count);
-            word += region.count as usize;
-            node += 1;
+        for op in chip::OPS {
+            match *op {
+                SysOp::Continuous { base, count } => {
+                    let mem = unsafe { buf_base.add(word) } as u32;
+                    nodes[node] = RegdmaLink::continuous(base, mem, count);
+                    word += count as usize;
+                    node += 1;
+                }
+                // Restore-only: re-apply state backup can't capture (unlock
+                // TEE/APM, pulse a clock-update bit, ...).
+                SysOp::Write { addr, value, mask } => {
+                    nodes[node] = RegdmaLink::write(addr, value, mask, true, false);
+                    node += 1;
+                }
+                SysOp::Wait { addr, value, mask } => {
+                    nodes[node] = RegdmaLink::wait(addr, value, mask, true, false);
+                    node += 1;
+                }
+                // Console UART (same sequence as the opt-in path).
+                SysOp::Uart { base } => {
+                    let mem = unsafe { buf_base.add(word) } as u32;
+                    build_uart_seq(base, &mut nodes[node..node + UART_NODE_COUNT], mem);
+                    word += UART_RETENTION_REGS_CNT as usize;
+                    node += UART_NODE_COUNT;
+                }
+                SysOp::Systimer { base } => {
+                    build_systimer_seq(
+                        base,
+                        &mut nodes[node..node + SYSTIMER_NODE_COUNT],
+                        buf_base,
+                        word,
+                    );
+                    node += SYSTIMER_NODE_COUNT;
+                    word += super::SYSTIMER_CONT_WORDS;
+                }
+            }
         }
-
-        // PRI_2: restore-only WRITE clearing TEE_M4_MODE_CTRL so the TEE/APM
-        // restore can write freely.
-        nodes[node] = RegdmaLink::write(TEE_M4_MODE_CTRL_REG, 0, 0xFFFF_FFFF, true, false);
-        node += 1;
-
-        // PRI_4/5: TEE/APM, interrupt matrix, HP system.
-        for region in &CONT_REGIONS[TEE_APM_START..IOMUX_START] {
-            let mem = unsafe { buf_base.add(word) } as u32;
-            nodes[node] = RegdmaLink::continuous(region.base, mem, region.count);
-            word += region.count as usize;
-            node += 1;
-        }
-
-        // PRI_5: console UART0 (same sequence as the opt-in path).
-        let mem = unsafe { buf_base.add(word) } as u32;
-        build_uart_seq(UART0_BASE, &mut nodes[node..node + UART_NODE_COUNT], mem);
-        word += UART_RETENTION_REGS_CNT as usize;
-        node += UART_NODE_COUNT;
-
-        // PRI_6: IO MUX, GPIO matrix, SPI mem.
-        for region in &CONT_REGIONS[IOMUX_START..] {
-            let mem = unsafe { buf_base.add(word) } as u32;
-            nodes[node] = RegdmaLink::continuous(region.base, mem, region.count);
-            word += region.count as usize;
-            node += 1;
-        }
-
-        // PRI_6: SysTimer. Backup latches each unit's counter (UPDATE + wait for
-        // VALUE_VALID) and reads it; restore loads it back and triggers a load.
-        // The value is read from VALUE_HI/LO but restored into LOAD_HI/LO, hence
-        // the split backup/restore addresses.
-        let alloc = |len: u32, word: &mut usize| -> u32 {
-            let mem = unsafe { buf_base.add(*word) } as u32;
-            *word += len as usize;
-            mem
-        };
-
-        // Unit 0: latch + read value, restore into load.
-        nodes[node] = RegdmaLink::write(ST_UNIT0_OP, ST_UNIT_UPDATE, ST_UNIT_UPDATE, false, true);
-        node += 1;
-        nodes[node] = RegdmaLink::wait(
-            ST_UNIT0_OP,
-            ST_UNIT_VALUE_VALID,
-            ST_UNIT_VALUE_VALID,
-            false,
-            true,
-        );
-        node += 1;
-        let mem = alloc(2, &mut word);
-        nodes[node] = RegdmaLink::continuous_split(ST_UNIT0_VALUE_HI, ST_UNIT0_LOAD_HI, mem, 2);
-        node += 1;
-        nodes[node] = RegdmaLink::write(ST_UNIT0_LOAD, ST_UNIT_LOAD, ST_UNIT_LOAD, true, false);
-        node += 1;
-
-        // Unit 1.
-        nodes[node] = RegdmaLink::write(ST_UNIT1_OP, ST_UNIT_UPDATE, ST_UNIT_UPDATE, false, true);
-        node += 1;
-        nodes[node] = RegdmaLink::wait(
-            ST_UNIT1_OP,
-            ST_UNIT_VALUE_VALID,
-            ST_UNIT_VALUE_VALID,
-            false,
-            true,
-        );
-        node += 1;
-        let mem = alloc(2, &mut word);
-        nodes[node] = RegdmaLink::continuous_split(ST_UNIT1_VALUE_HI, ST_UNIT1_LOAD_HI, mem, 2);
-        node += 1;
-        nodes[node] = RegdmaLink::write(ST_UNIT1_LOAD, ST_UNIT_LOAD, ST_UNIT_LOAD, true, false);
-        node += 1;
-
-        // Comparator target values & periods.
-        let mem = alloc(ST_TARGETS_LEN, &mut word);
-        nodes[node] = RegdmaLink::continuous(ST_TARGET0_HI, mem, ST_TARGETS_LEN);
-        node += 1;
-        for comp in [ST_COMP0_LOAD, ST_COMP1_LOAD, ST_COMP2_LOAD] {
-            nodes[node] = RegdmaLink::write(comp, ST_COMP_LOAD, ST_COMP_LOAD, true, false);
-            node += 1;
-        }
-        // Re-arm period mode: clear+set for target0/1, clear for target2.
-        for target in [ST_TARGET0_CONF, ST_TARGET1_CONF] {
-            nodes[node] = RegdmaLink::write(target, 0, ST_TARGET_PERIOD_MODE, true, false);
-            node += 1;
-            nodes[node] = RegdmaLink::write(
-                target,
-                ST_TARGET_PERIOD_MODE,
-                ST_TARGET_PERIOD_MODE,
-                true,
-                false,
-            );
-            node += 1;
-        }
-        nodes[node] = RegdmaLink::write(ST_TARGET2_CONF, 0, ST_TARGET_PERIOD_MODE, true, false);
-        node += 1;
-
-        // Work-enable and interrupt-enable state.
-        let mem = alloc(1, &mut word);
-        nodes[node] = RegdmaLink::continuous(ST_CONF, mem, 1);
-        node += 1;
-        let mem = alloc(1, &mut word);
-        nodes[node] = RegdmaLink::continuous(ST_INT_ENA, mem, 1);
-        node += 1;
 
         &mut nodes[..node]
     }

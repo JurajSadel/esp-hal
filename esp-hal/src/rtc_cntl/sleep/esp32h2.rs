@@ -560,6 +560,15 @@ pub struct RtcSleepConfig {
     pub pd_flags: PowerDownFlags,
     /// Indicates whether the top power domain should remain enabled during sleep.
     need_pd_top: bool,
+    /// See [`Self::with_cpu_power_down`].
+    cpu_power_down: bool,
+    /// See [`Self::with_top_power_down`].
+    top_power_down: bool,
+    /// CPU-domain retention store; null when only clock-gating. A raw pointer
+    /// (not a borrow) keeps `Self` `Copy`; the builders take a `&'static mut`.
+    cpu_retention_mem: *mut crate::rtc_cntl::cpu_retention::CpuRetentionMemory,
+    /// TOP-domain system-peripheral regDMA store; null when not opted in.
+    top_retention_mem: *mut crate::rtc_cntl::retention::SystemRetentionMemory,
 }
 
 impl Default for RtcSleepConfig {
@@ -571,7 +580,67 @@ impl Default for RtcSleepConfig {
             deep: false,
             pd_flags: PowerDownFlags(0),
             need_pd_top: false,
+            cpu_power_down: false,
+            top_power_down: false,
+            cpu_retention_mem: core::ptr::null_mut(),
+            top_retention_mem: core::ptr::null_mut(),
         }
+    }
+}
+
+impl RtcSleepConfig {
+    /// Power down the CPU power domain during light sleep.
+    ///
+    /// CPU state is saved/restored in software into the caller's
+    /// [`CpuRetentionMemory`]. No effect on deep sleep. See
+    /// [`cpu_retention::cpu_power_down_wake_count`] to confirm the domain lost
+    /// power.
+    ///
+    /// [`CpuRetentionMemory`]: crate::rtc_cntl::cpu_retention::CpuRetentionMemory
+    /// [`cpu_retention::cpu_power_down_wake_count`]: crate::rtc_cntl::cpu_retention::cpu_power_down_wake_count
+    #[instability::unstable]
+    #[must_use]
+    pub fn with_cpu_power_down(
+        mut self,
+        memory: &'static mut crate::rtc_cntl::cpu_retention::CpuRetentionMemory,
+    ) -> Self {
+        self.cpu_power_down = true;
+        self.cpu_retention_mem = memory;
+        self
+    }
+
+    /// Returns whether the CPU power domain is powered down during light sleep.
+    #[instability::unstable]
+    pub fn cpu_power_down(&self) -> bool {
+        self.cpu_power_down
+    }
+
+    /// Power down the digital `TOP` power domain during light sleep.
+    ///
+    /// Core system peripherals are backed up to the caller's
+    /// [`SystemRetentionMemory`] by regDMA and restored on wakeup. This also
+    /// powers the CPU down, so it needs a [`CpuRetentionMemory`] too. No effect
+    /// on deep sleep.
+    ///
+    /// [`CpuRetentionMemory`]: crate::rtc_cntl::cpu_retention::CpuRetentionMemory
+    /// [`SystemRetentionMemory`]: crate::rtc_cntl::cpu_retention::SystemRetentionMemory
+    #[instability::unstable]
+    #[must_use]
+    pub fn with_top_power_down(
+        mut self,
+        cpu_memory: &'static mut crate::rtc_cntl::cpu_retention::CpuRetentionMemory,
+        system_memory: &'static mut crate::rtc_cntl::retention::SystemRetentionMemory,
+    ) -> Self {
+        self.top_power_down = true;
+        self.cpu_retention_mem = cpu_memory;
+        self.top_retention_mem = system_memory;
+        self
+    }
+
+    /// Returns whether the TOP power domain is powered down during light sleep.
+    #[instability::unstable]
+    pub fn top_power_down(&self) -> bool {
+        self.top_power_down
     }
 }
 
@@ -670,15 +739,32 @@ impl RtcSleepConfig {
             self.pd_flags.set_pd_rc_fast(true);
             self.pd_flags.set_pd_xtal32k(!lp_slow_uses_xtal32k);
         } else {
-            // Light sleep: the digital and top domains stay powered (so execution
-            // resumes in place; the top domain must also stay on for any EXT1/GPIO
-            // wakeup). Power down the analog clock sources nothing needs while the
+            // Light sleep: the digital domain (CPU, RAM, peripherals) stays
+            // powered and only clock-gated by default, so execution resumes in
+            // place. Power down the analog clock sources nothing needs while the
             // core is clock-gated to cut power. Unlike the C5/C6 family, H2's
-            // light-sleep analog config does not lower the HP voltage, so this saves
-            // the oscillator current but not regulator power.
+            // light-sleep analog config does not lower the HP voltage, so this
+            // saves the oscillator current but not regulator power.
             self.pd_flags.set_pd_xtal(true);
             self.pd_flags.set_pd_rc_fast(true);
             self.pd_flags.set_pd_xtal32k(!lp_slow_uses_xtal32k);
+
+            // Only power a domain down with the caller's retention storage and no
+            // active power-domain lock on it; otherwise fall back to clock-gating.
+            // Shares the chip-agnostic regDMA/CPU-retention path with the C6.
+            use crate::rtc_cntl::power_domain::{Domain, can_power_down};
+            let have_cpu_mem = !self.cpu_retention_mem.is_null();
+            let have_sys_mem = !self.top_retention_mem.is_null();
+
+            // TOP-pd needs both the CPU frame buffer (it implies CPU-pd) and the
+            // system-peripheral regDMA buffer.
+            let top_pd =
+                self.top_power_down && have_cpu_mem && have_sys_mem && can_power_down(Domain::Top);
+            let cpu_pd = self.cpu_power_down && have_cpu_mem && can_power_down(Domain::Cpu);
+
+            // The CPU can't survive a TOP power-down, so pd_top implies pd_cpu.
+            self.pd_flags.set_pd_top(top_pd);
+            self.pd_flags.set_pd_cpu(cpu_pd || top_pd);
         }
     }
 
@@ -780,20 +866,46 @@ impl RtcSleepConfig {
                 .slp_wakeup_cntl4()
                 .write(|w| w.slp_reject_cause_clr().bit(true));
 
+            // Arm regDMA TOP-domain retention: after the power config write above
+            // (which resets the backup-enable bits) and before the sleep request.
+            if !self.deep && self.pd_flags.pd_top() && !self.top_retention_mem.is_null() {
+                let system_memory = &mut *self.top_retention_mem;
+                crate::rtc_cntl::retention::enable_top_retention(system_memory);
+            }
+
             // Start entry into sleep mode
 
-            // pmu_ll_hp_set_sleep_enable
-            pmu().slp_wakeup_cntl0().write(|w| w.sleep_req().bit(true));
+            if !self.deep && self.pd_flags.pd_cpu() && !self.cpu_retention_mem.is_null() {
+                // CPU power-down light sleep: save state, sleep, resume with it
+                // restored. Non-null whenever apply() sets pd_cpu.
+                let memory = &mut *self.cpu_retention_mem;
+                crate::rtc_cntl::cpu_retention::sleep_with_cpu_retention(memory);
+            } else {
+                // pmu_ll_hp_set_sleep_enable
+                pmu().slp_wakeup_cntl0().write(|w| w.sleep_req().bit(true));
 
-            loop {
-                let int_raw = pmu().int_raw().read();
-                if int_raw.soc_wakeup().bit_is_set() || int_raw.soc_sleep_reject().bit_is_set() {
-                    break;
+                loop {
+                    let int_raw = pmu().int_raw().read();
+                    if int_raw.soc_wakeup().bit_is_set() || int_raw.soc_sleep_reject().bit_is_set()
+                    {
+                        break;
+                    }
                 }
             }
         }
 
         // esp-idf returns if the sleep was rejected, we don't return anything
+
+        // After a TOP power-down TIMG0 (not retained) comes back with its
+        // flashboot watchdog armed; disable it (like IDF's
+        // misc_modules_wake_prepare()) or it soon resets the chip.
+        if !self.deep && self.pd_flags.pd_top() {
+            let tg0 = crate::peripherals::TIMG0::regs();
+            tg0.wdtwprotect().write(|w| unsafe { w.bits(0x50D8_3AA1) });
+            tg0.wdtconfig0()
+                .modify(|_, w| w.wdt_flashboot_mod_en().bit(false));
+            tg0.wdtwprotect().write(|w| unsafe { w.bits(0) });
+        }
 
         ClockTree::with(|clocks| {
             cpu_freq_config.restore(clocks);

@@ -1,8 +1,10 @@
-//! CPU power-down retention during light sleep (ESP32-C6).
+//! CPU power-down retention during light sleep (RISC-V PMU chips).
 //!
-//! When the C6 powers down `pd_cpu` in light sleep the CPU loses all state.
+//! When the chip powers down `pd_cpu` in light sleep the CPU loses all state.
 //! regDMA can't reach the register file/CSRs, so they are saved/restored in
-//! software. Backing RAM
+//! software. This logic is chip-agnostic - the RISC-V register/CSR set and the
+//! CPU-domain device-register layout are shared; only the device-register base
+//! addresses are per-chip data (see the `retention::chip` module). Backing RAM
 //! ([`CpuRetentionMemory`]) is caller-owned, opt-in via
 //! [`RtcSleepConfig::with_cpu_power_down`]; without it the CPU is clock-gated.
 //!
@@ -364,68 +366,78 @@ const fn total_words(regions: &[Region]) -> usize {
     words
 }
 
-// Interrupt matrix priority registers (`INTPRI`, base 0x600C_5000).
+// Per-chip base addresses (the region layout below is chip-agnostic).
+use crate::rtc_cntl::retention::chip::{
+    CACHE_BASE,
+    CLINT_MINT_BASE,
+    CLINT_UINT_BASE,
+    INTPRI_BASE,
+    PLIC_MX_BASE,
+    PLIC_UX_BASE,
+};
+
+// Interrupt matrix priority registers (`INTPRI`).
 const INTPRI_REGIONS: [Region; 2] = [
     // INTPRI_CORE0_CPU_INT_ENABLE_REG ..= INTPRI_RND_ECO_LOW_REG
     Region {
-        start: 0x600C_5000,
+        start: INTPRI_BASE,
         words: 45,
     },
     // INTPRI_RND_ECO_HIGH_REG
     Region {
-        start: 0x600C_53FC,
+        start: INTPRI_BASE + 0x3FC,
         words: 1,
     },
 ];
 
-// L1 cache control (`EXTMEM`, base 0x600C_8000).
+// L1 cache control (`EXTMEM`/`CACHE`).
 const CACHE_REGIONS: [Region; 2] = [
-    // EXTMEM_L1_CACHE_CTRL_REG
+    // *_L1_CACHE_CTRL_REG
     Region {
-        start: 0x600C_8004,
+        start: CACHE_BASE + 0x4,
         words: 1,
     },
-    // EXTMEM_L1_CACHE_WRAP_AROUND_CTRL_REG
+    // *_L1_CACHE_WRAP_AROUND_CTRL_REG
     Region {
-        start: 0x600C_8020,
+        start: CACHE_BASE + 0x20,
         words: 1,
     },
 ];
 
-// PLIC machine/user interrupt controllers (bases 0x2000_1000 / 0x2000_1400).
+// PLIC machine/user interrupt controllers.
 const PLIC_REGIONS: [Region; 4] = [
     // PLIC_MXINT_ENABLE_REG ..= PLIC_MXINT_CLAIM_REG
     Region {
-        start: 0x2000_1000,
+        start: PLIC_MX_BASE,
         words: 38,
     },
     // PLIC_MXINT_CONF_REG
     Region {
-        start: 0x2000_13FC,
+        start: PLIC_MX_BASE + 0x3FC,
         words: 1,
     },
     // PLIC_UXINT_ENABLE_REG ..= PLIC_UXINT_CLAIM_REG
     Region {
-        start: 0x2000_1400,
+        start: PLIC_UX_BASE,
         words: 38,
     },
     // PLIC_UXINT_CONF_REG
     Region {
-        start: 0x2000_17FC,
+        start: PLIC_UX_BASE + 0x3FC,
         words: 1,
     },
 ];
 
-// CLINT machine/user timers (bases 0x2000_1800 / 0x2000_1C00).
+// CLINT machine/user timers.
 const CLINT_REGIONS: [Region; 2] = [
     // CLINT_MINT_SIP_REG ..= CLINT_MINT_MTIMECMP_H_REG
     Region {
-        start: 0x2000_1800,
+        start: CLINT_MINT_BASE,
         words: 6,
     },
     // CLINT_UINT_SIP_REG ..= CLINT_UINT_UTIMECMP_H_REG
     Region {
-        start: 0x2000_1C00,
+        start: CLINT_UINT_BASE,
         words: 6,
     },
 ];
