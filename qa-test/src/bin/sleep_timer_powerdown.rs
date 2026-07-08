@@ -9,9 +9,11 @@
 //! It also proves the design end to end:
 //!
 //! - **Negative control**: an un-retained `TOP` register (I2C0 `SCL_LOW_PERIOD`) survives a
-//!   clock-gated sleep but is wiped by `top-powerdown`.
+//!   clock-gated sleep; once its driver is dropped (releasing the power-domain lock that would
+//!   otherwise block the power-down) a `top-powerdown` wipes it and the CPU-power-down counter
+//!   advances - direct evidence the domain lost power.
 //! - **Safety net**: while UART1 is active and un-retained it holds a `TOP` power-domain lock, so
-//!   `top-powerdown` degrades to clock-gating.
+//!   `top-powerdown` degrades to clock-gating (the counter stays put).
 //! - **Opt-in retention**: UART1/I2C0/SPI2 are retained, then a config register of each is
 //!   confirmed to survive `top-powerdown`.
 //!
@@ -32,7 +34,7 @@ use esp_hal::{
     rtc_cntl::{
         Rtc,
         cpu_retention::{CpuRetentionMemory, SystemRetentionMemory, cpu_power_down_wake_count},
-        sleep::{RtcSleepConfig, TimerWakeupSource},
+        sleep::{LowPower, RtcSleepConfig, TimerWakeupSource},
     },
     spi::master::{Config as SpiConfig, Spi, SpiRetentionMemory},
     time::Duration,
@@ -61,6 +63,7 @@ const ROUNDS: u32 = 3;
 /// CPU power-down count. `marker` is driven low for the sleep window.
 fn sleep_round(
     rtc: &mut Rtc<'_>,
+    lpwr: &mut LowPower<'_>,
     marker: &mut Output<'_>,
     delay: &Delay,
     config: &RtcSleepConfig,
@@ -71,7 +74,7 @@ fn sleep_round(
 
     let rtc_before = rtc.time_since_power_up().as_micros();
     marker.set_low();
-    rtc.sleep(config, &[&timer]);
+    lpwr.sleep(config, &[&timer]);
     marker.set_high();
     let slept_ms = (rtc.time_since_power_up().as_micros() - rtc_before) / 1000;
 
@@ -89,7 +92,8 @@ fn sleep_round(
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    let mut rtc = Rtc::new(peripherals.LPWR);
+    let mut rtc = Rtc::new(peripherals.RTC_TIMER);
+    let mut lpwr = LowPower::new(peripherals.LPWR);
     let delay = Delay::new();
 
     // Awake = high, asleep = low. The IO domain stays powered, so the pin holds.
@@ -106,28 +110,37 @@ fn main() -> ! {
 
     println!("up and running!");
 
-    // Negative control: an idle, un-retained I2C0 keeps its SCL_LOW_PERIOD
-    // register through a clock-gated sleep but loses it to a top-powerdown.
+    // Negative control: I2C0's SCL_LOW_PERIOD (a TOP register) survives a
+    // clock-gated sleep, but once its driver is dropped a top-powerdown wipes
+    // it. A live driver holds a TOP power-domain lock (see the safety net
+    // below), so it has to be released first for the domain to actually power
+    // down - which is exactly what proves the domain lost power.
     const I2C0_SCL_LOW_PERIOD: *const u32 = 0x6000_4000 as *const u32;
-    let mut i2c0 = I2c::new(peripherals.I2C0, I2cConfig::default()).unwrap();
+    let i2c0 = I2c::new(peripherals.I2C0, I2cConfig::default()).unwrap();
     // SAFETY: driver alive, register readable.
     let scl_configured = unsafe { I2C0_SCL_LOW_PERIOD.read_volatile() };
 
     marker.set_low();
-    rtc.sleep(
+    lpwr.sleep(
         &clock_gated,
         &[&TimerWakeupSource::new(Duration::from_millis(EVENT_MS))],
     );
     marker.set_high();
+    // Read while the driver is still alive (TOP stayed powered, so it survives).
     let scl_after_clock_gate = unsafe { I2C0_SCL_LOW_PERIOD.read_volatile() };
+
+    // Drop the driver so its TOP power-domain lock is released and the domain can
+    // actually power down (nothing else holds one yet).
+    core::mem::drop(i2c0);
 
     let downs_before_nc = cpu_power_down_wake_count();
     marker.set_low();
-    rtc.sleep(
+    lpwr.sleep(
         &top_pd,
         &[&TimerWakeupSource::new(Duration::from_millis(EVENT_MS))],
     );
     marker.set_high();
+    // SAFETY: register readable; reads 0 now that TOP lost power (and reset it).
     let scl_after_top_pd = unsafe { I2C0_SCL_LOW_PERIOD.read_volatile() };
     let downs_after_nc = cpu_power_down_wake_count();
 
@@ -156,9 +169,6 @@ fn main() -> ! {
         downs_after_nc
     );
 
-    // The power-down above reset I2C0; re-apply its config for the proof below.
-    i2c0.apply_config(&I2cConfig::default()).unwrap();
-
     // UART1 is live but not yet retained, so it holds a TOP power-domain lock:
     // top-powerdown must degrade to clock-gating (counter must not advance).
     const UART1_CLKDIV: *const u32 = 0x6000_1014 as *const u32;
@@ -168,6 +178,7 @@ fn main() -> ! {
     for round in 1..=2 {
         sleep_round(
             &mut rtc,
+            &mut lpwr,
             &mut marker,
             &delay,
             &top_pd,
@@ -194,7 +205,13 @@ fn main() -> ! {
     // SAFETY: driver alive, register readable.
     let clkdiv_before = unsafe { UART1_CLKDIV.read_volatile() };
 
-    // Same for I2C0 (re-used from the negative control above).
+    // Re-acquire I2C0 (the negative control dropped it) and retain it too.
+    // SAFETY: the earlier I2C0 driver was dropped, so no other instance is live.
+    let i2c0 = I2c::new(
+        unsafe { esp_hal::peripherals::I2C0::steal() },
+        I2cConfig::default(),
+    )
+    .unwrap();
     let _i2c0 =
         i2c0.with_retention_memory(mk_static!(I2cRetentionMemory, I2cRetentionMemory::new()));
     // SAFETY: driver alive, register readable.
@@ -217,7 +234,7 @@ fn main() -> ! {
 
     for (label, config) in &modes {
         for round in 1..=ROUNDS {
-            sleep_round(&mut rtc, &mut marker, &delay, config, label, round);
+            sleep_round(&mut rtc, &mut lpwr, &mut marker, &delay, config, label, round);
         }
     }
 
@@ -266,6 +283,7 @@ fn main() -> ! {
         round += 1;
         sleep_round(
             &mut rtc,
+            &mut lpwr,
             &mut marker,
             &delay,
             &top_pd,
