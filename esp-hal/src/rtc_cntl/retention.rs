@@ -490,6 +490,15 @@ impl<M: RetentionMemory> Drop for PowerManagement<'_, M> {
     }
 }
 
+// SAFETY: the only thread-unsafe state a `Retain` holds is the raw node/link
+// pointers, and those are only ever dereferenced on the single HP core under the
+// `REGISTRY` mutex (see `arm_link`/`deregister_node`); the owner never follows
+// them otherwise. Keeping these keeps the host peripheral drivers `Send`/`Sync`
+// as they were before gaining a `PowerManagement` field, mirroring the
+// `unsafe impl Send for Registry` above.
+unsafe impl<M: RetentionMemory> Send for PowerManagement<'_, M> {}
+unsafe impl<M: RetentionMemory> Sync for PowerManagement<'_, M> {}
+
 impl<M: RetentionMemory> core::fmt::Debug for PowerManagement<'_, M> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
