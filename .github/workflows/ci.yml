@@ -212,6 +212,15 @@ jobs:
           components: rust-src
           alias: "true"
 
+      # The xtensa and riscv build disjoint chip sets, so give them
+      # separate cache entries
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: docs-${{ matrix.group }}
+          # Every merge_group run gets a unique ephemeral ref, so a cache saved
+          # there can never be restored. Restore everywhere, save elsewhere.
+          save-if: ${{ github.event_name != 'merge_group' }}
+
       - name: Build Xtensa docs
         if: matrix.group == 'xtensa'
         shell: bash
@@ -280,6 +289,13 @@ jobs:
       - name: Stable toolchain checks
         if: matrix.group == 'riscv'
         run: rustc +${{ env.MSRV }} --version --verbose
+
+      # The xtensa and riscv lint disjoint chip sets under different
+      # toolchains, so keep their caches separate.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv-${{ matrix.group }}
+          save-if: ${{ github.event_name != 'merge_group' }}
 
       # Verify the MSRV for all chips by running a lint session
       - name: msrv RISC-V (esp-hal)
@@ -358,6 +374,18 @@ jobs:
         with:
           components: rustfmt,miri
           alias: "true"
+
+      # xtask funnels every package it drives into the root `target`, but the
+      # `extras` crates are built directly and keep their own target dirs.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: host-tests
+          save-if: ${{ github.event_name != 'merge_group' }}
+          workspaces: |
+            . -> target
+            extras/bench-server -> target
+            extras/esp-wifishark -> target
+            extras/ieee802154-sniffer -> target
 
       # Run xtask tests
       - name: Run xtask tests
@@ -468,6 +496,7 @@ jobs:
     runs-on: macos-m1-self-hosted
     outputs:
       matrix: ${{ steps.chips.outputs.matrix }}
+      chips: ${{ steps.chips.outputs.chips }}
     steps:
       - name: Resolve chip matrix
         id: chips
@@ -485,7 +514,12 @@ jobs:
             {"soc":"esp32p4", "rust-target":"riscv32imafc-unknown-none-elf","runner":"esp32p4",       "host":"aarch64"},
             {"soc":"esp32s31","rust-target":"riscv32imafc-unknown-none-elf","runner":"esp32s31-jtag", "host":"aarch64"}
           ]'
+
           echo "matrix={\"target\":$(echo "$ALL_CHIPS" | jq -c .)}" >> "$GITHUB_OUTPUT"
+
+          # Space-separated SoC list so the build step below iterates over the
+          # same source of truth as the device-run matrix.
+          echo "chips=$(echo "$ALL_CHIPS" | jq -r '[.[].soc] | join(" ")')" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v6
 
@@ -502,14 +536,12 @@ jobs:
           alias: "true"
 
       - name: Build hil-test tests
+        env:
+          CHIPS: ${{ steps.chips.outputs.chips }}
         run: |
-          for chip in esp32 esp32s2 esp32s3 esp32s31 esp32c2 esp32c3 esp32c5 esp32c6 esp32c61 esp32h2 esp32p4; do
-            if cargo xtask build tests "$chip" --help >/dev/null 2>&1; then
-              echo "Building ALL hil-test tests for $chip"
-              cargo xtask build tests "$chip"
-            else
-              echo "Skipping $chip: not supported by this ref's xtask"
-            fi
+          for chip in $CHIPS; do
+            echo "Building ALL hil-test tests for $chip"
+            cargo xtask build tests "$chip"
           done
 
       - uses: actions/upload-artifact@v6
@@ -525,14 +557,12 @@ jobs:
         run: rm -rf target/tests
 
       - name: Build hil-test-radio tests
+        env:
+          CHIPS: ${{ steps.chips.outputs.chips }}
         run: |
-          for chip in esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c5 esp32c6 esp32c61 esp32h2; do
-            if cargo xtask build tests "$chip" hil-test-radio --help >/dev/null 2>&1; then
-              echo "Building ALL hil-test-radio tests for $chip"
-              cargo xtask build tests "$chip" hil-test-radio
-            else
-              echo "Skipping $chip: not supported by this ref's xtask"
-            fi
+          for chip in $CHIPS; do
+            echo "Building ALL hil-test-radio tests for $chip"
+            cargo xtask build tests "$chip" hil-test-radio
           done
 
       - uses: actions/upload-artifact@v6
@@ -746,6 +776,7 @@ jobs:
       - esp-hal
       - docs
       - msrv
+      - xtensa-lld
       - host-tests
       - changelog
       - semver-check
