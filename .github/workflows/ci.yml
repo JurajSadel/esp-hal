@@ -20,7 +20,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  MSRV: "1.95.0"
   DEFMT_LOG: trace
   PROBE_RS_CONFIG_PRESET: local-hil
 
@@ -127,7 +126,8 @@ jobs:
   esp-hal:
     needs: calculate
     if: needs.calculate.outputs.run-build == 'true'
-    runs-on: macos-m1-self-hosted
+    # TEMPORARY (fork testing): was macos-m1-self-hosted
+    runs-on: ubuntu-latest
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       CI: 1
@@ -149,18 +149,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Install the Rust toolchain for Xtensa devices:
-      - uses: esp-rs/xtensa-toolchain@v1.6
-        if: matrix.group.toolchain == 'esp'
+      - uses: ./.github/actions/setup-toolchains
         with:
-          version: 1.97.0.0
-
-      # Install the Rust stable toolchain for RISC-V devices:
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          target: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf,riscv32imafc-unknown-none-elf
-          toolchain: stable
-          components: rust-src
+          xtensa: ${{ matrix.group.toolchain == 'esp' }}
+          riscv: "true"
 
       - name: Setup cargo-batch
         run: |
@@ -194,54 +186,54 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Install the Rust toolchain for Xtensa devices:
-      - uses: esp-rs/xtensa-toolchain@v1.6
+      # Docs mix toolchains: Xtensa builds on the MSRV pin while
+      # RISC-V builds on stable.
+      - uses: ./.github/actions/setup-toolchains
         with:
-          version: 1.95.0.0
+          channel: msrv
+          xtensa: "true"
 
-      # Install the Rust stable toolchain for RISC-V devices:
-      - uses: dtolnay/rust-toolchain@v1
+      - uses: ./.github/actions/setup-toolchains
         with:
-          target: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf,riscv32imafc-unknown-none-elf
-          toolchain: stable
-          components: rust-src
+          riscv: "true"
+
       # Install the Rust nightly toolchain for RISC-V devices:
       - uses: ./.github/actions/setup-nightly
         with:
-          targets: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf,riscv32imafc-unknown-none-elf
+          targets: all
           components: rust-src
           alias: "true"
 
-      - name: Build Xtensa docs
-        if: matrix.group == 'xtensa'
-        shell: bash
-        run: cargo xtask build documentation --chips esp32,esp32s2,esp32s3
+      # The xtensa and riscv build disjoint chip sets, so give them
+      # separate cache entries
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: docs-${{ matrix.group }}
+          # Every merge_group run gets a unique ephemeral ref, so a cache saved
+          # there can never be restored. Restore everywhere, save elsewhere.
+          save-if: ${{ github.event_name != 'merge_group' }}
 
-      - name: Build RISC-V docs
-        if: matrix.group == 'riscv'
-        shell: bash
-        run: cargo xtask build documentation --chips esp32c2,esp32c3,esp32c5,esp32c6,esp32c61,esp32h2,esp32p4,esp32s31
-
-      - name: Run Xtensa doc tests
-        if: matrix.group == 'xtensa'
+      # The matrix group is the architecture, so the chip list for this leg is
+      # just the chips.json entries with that `arch`.
+      - name: Resolve chips for this group
+        id: chips
         shell: bash
         run: |
-          cargo xtask run doc-tests esp32
-          cargo xtask run doc-tests esp32s2
-          cargo xtask run doc-tests esp32s3
+          echo "chips=$(jq -r --arg a '${{ matrix.group }}' \
+            '[.[] | select(.arch == $a) | .soc] | join(",")' .github/chips.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Run RISC-V doc tests
-        if: matrix.group == 'riscv'
+      - name: Build docs
         shell: bash
+        run: cargo xtask build documentation --chips ${{ steps.chips.outputs.chips }}
+
+      - name: Run doc tests
+        shell: bash
+        env:
+          CHIPS: ${{ steps.chips.outputs.chips }}
         run: |
-          cargo xtask run doc-tests esp32c2
-          cargo xtask run doc-tests esp32c3
-          cargo xtask run doc-tests esp32c5
-          cargo xtask run doc-tests esp32c6
-          cargo xtask run doc-tests esp32c61
-          cargo xtask run doc-tests esp32h2
-          cargo xtask run doc-tests esp32p4
-          cargo xtask run doc-tests esp32s31
+          for chip in ${CHIPS//,/ }; do
+            cargo xtask run doc-tests "$chip"
+          done
 
   # --------------------------------------------------------------------------
   # MSRV
@@ -261,36 +253,44 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: esp-rs/xtensa-toolchain@v1.6
-        if: matrix.group == 'xtensa'
+      - id: toolchains
+        uses: ./.github/actions/setup-toolchains
         with:
-          version: ${{ env.MSRV }}
+          channel: msrv
+          xtensa: ${{ matrix.group == 'xtensa' }}
+          riscv: ${{ matrix.group == 'riscv' }}
+          riscv-extra-targets: x86_64-unknown-linux-gnu
+          components: rust-src,clippy
 
       - name: esp toolchain checks
         if: matrix.group == 'xtensa'
         run: rustc +esp --version --verbose
 
-      - uses: dtolnay/rust-toolchain@v1
-        if: matrix.group == 'riscv'
-        with:
-          target: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf,riscv32imafc-unknown-none-elf,x86_64-unknown-linux-gnu
-          toolchain: ${{ env.MSRV }}
-          components: rust-src,clippy
-
       - name: Stable toolchain checks
         if: matrix.group == 'riscv'
-        run: rustc +${{ env.MSRV }} --version --verbose
+        run: rustc +${{ steps.toolchains.outputs.riscv-toolchain }} --version --verbose
 
-      # Verify the MSRV for all chips by running a lint session
-      - name: msrv RISC-V (esp-hal)
-        if: matrix.group == 'riscv'
-        run: |
-          cargo xtask lint-packages --chips esp32c2,esp32c3,esp32c5,esp32c6,esp32c61,esp32h2,esp32p4,esp32s31 --toolchain ${{ env.MSRV }}
+      # The xtensa and riscv lint disjoint chip sets under different
+      # toolchains, so keep their caches separate.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv-${{ matrix.group }}
+          save-if: ${{ github.event_name != 'merge_group' }}
 
-      - name: msrv Xtensa (esp-hal)
-        if: matrix.group == 'xtensa'
+      # The matrix group is the architecture, so the chip list for this leg is
+      # just the chips.json entries with that `arch`.
+      - name: Resolve chips for this group
+        id: chips
         run: |
-          cargo xtask lint-packages --chips esp32,esp32s2,esp32s3 --toolchain esp
+          echo "chips=$(jq -r --arg a '${{ matrix.group }}' \
+            '[.[] | select(.arch == $a) | .soc] | join(",")' .github/chips.json)" >> "$GITHUB_OUTPUT"
+
+      # Verify the MSRV for all chips by running a lint session. The Xtensa MSRV
+      # lives in the `esp` toolchain rather than a numbered channel.
+      - name: msrv lint (esp-hal)
+        run: |
+          cargo xtask lint-packages --chips ${{ steps.chips.outputs.chips }} \
+            --toolchain ${{ matrix.group == 'xtensa' && 'esp' || steps.toolchains.outputs.riscv-toolchain }}
 
   # --------------------------------------------------------------------------
   # Xtensa LLD linking
@@ -316,12 +316,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Install the Rust toolchain for Xtensa devices. Keep this in sync with
-      # the `esp-hal` build job above so the LLD linking test exercises the
-      # same compiler as the rest of CI.
-      - uses: esp-rs/xtensa-toolchain@v1.6
+      # Uses the same pin as the `esp-hal` build job above, so the LLD linking
+      # test exercises the same compiler as the rest of CI.
+      - uses: ./.github/actions/setup-toolchains
         with:
-          version: 1.97.0.0
+          xtensa: "true"
 
       - name: Build hello_world with LLD
         working-directory: examples/hello_world
@@ -358,6 +357,18 @@ jobs:
         with:
           components: rustfmt,miri
           alias: "true"
+
+      # xtask funnels every package it drives into the root `target`, but the
+      # `extras` crates are built directly and keep their own target dirs.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: host-tests
+          save-if: ${{ github.event_name != 'merge_group' }}
+          workspaces: |
+            . -> target
+            extras/bench-server -> target
+            extras/esp-wifishark -> target
+            extras/ieee802154-sniffer -> target
 
       # Run xtask tests
       - name: Run xtask tests
@@ -465,51 +476,53 @@ jobs:
   hil-build:
     needs: calculate
     if: needs.calculate.outputs.run-hil == 'true'
-    runs-on: macos-m1-self-hosted
+    # TEMPORARY (fork testing): was macos-m1-self-hosted
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.chips.outputs.matrix }}
+      radio_matrix: ${{ steps.chips.outputs.radio_matrix }}
+      chips: ${{ steps.chips.outputs.chips }}
     steps:
+      # Checked out before resolving the matrix because the chip metadata comes
+      # from the tree.
+      - uses: actions/checkout@v6
+
       - name: Resolve chip matrix
         id: chips
         run: |
-          ALL_CHIPS='[
-            {"soc":"esp32",   "rust-target":"xtensa-esp32-none-elf",        "runner":"esp32-jtag",    "host":"aarch64"},
-            {"soc":"esp32s2", "rust-target":"xtensa-esp32s2-none-elf",      "runner":"esp32s2-jtag",  "host":"aarch64"},
-            {"soc":"esp32s3", "rust-target":"xtensa-esp32s3-none-elf",      "runner":"esp32s3-usb",   "host":"aarch64"},
-            {"soc":"esp32c2", "rust-target":"riscv32imc-unknown-none-elf",  "runner":"esp32c2-jtag",  "host":"aarch64"},
-            {"soc":"esp32c3", "rust-target":"riscv32imc-unknown-none-elf",  "runner":"esp32c3-usb",   "host":"aarch64"},
-            {"soc":"esp32c5", "rust-target":"riscv32imac-unknown-none-elf", "runner":"esp32c5-usb",   "host":"aarch64"},
-            {"soc":"esp32c6", "rust-target":"riscv32imac-unknown-none-elf", "runner":"esp32c6-usb",   "host":"aarch64"},
-            {"soc":"esp32c61","rust-target":"riscv32imac-unknown-none-elf", "runner":"esp32c61-usb",  "host":"aarch64"},
-            {"soc":"esp32h2", "rust-target":"riscv32imac-unknown-none-elf", "runner":"esp32h2-usb",   "host":"aarch64"},
-            {"soc":"esp32p4", "rust-target":"riscv32imafc-unknown-none-elf","runner":"esp32p4",       "host":"aarch64"},
-            {"soc":"esp32s31","rust-target":"riscv32imafc-unknown-none-elf","runner":"esp32s31-jtag", "host":"aarch64"}
-          ]'
-          echo "matrix={\"target\":$(echo "$ALL_CHIPS" | jq -c .)}" >> "$GITHUB_OUTPUT"
+          ALL_CHIPS=$(jq -c '[.[] | {soc, "rust-target", runner, host}]' .github/chips.json)
 
-      - uses: actions/checkout@v6
+          # A `radio-runner` entry marks a chip with a dedicated radio HIL
+          # runner; it takes the place of `runner` for the radio matrix.
+          RADIO_CHIPS=$(jq -c '
+            [.[] | select(has("radio-runner"))
+                 | {soc, "rust-target", runner: ."radio-runner", host}]' .github/chips.json)
 
-      - uses: esp-rs/xtensa-toolchain@v1.6
+          echo "matrix={\"target\":$ALL_CHIPS}" >> "$GITHUB_OUTPUT"
+          echo "radio_matrix={\"target\":$RADIO_CHIPS}" >> "$GITHUB_OUTPUT"
+
+          # Space-separated SoC list so the build step below iterates over the
+          # same source of truth as the device-run matrix.
+          echo "chips=$(echo "$ALL_CHIPS" | jq -r '[.[].soc] | join(" ")')" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/setup-toolchains
         with:
-          buildtargets: esp32,esp32s2,esp32s3
-          default: true
-          version: 1.97.0.0
+          xtensa: "true"
+          xtensa-default: "true"
 
       - uses: ./.github/actions/setup-nightly
         with:
-          targets: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf,riscv32imafc-unknown-none-elf
+          targets: all
           components: rust-src
           alias: "true"
 
       - name: Build hil-test tests
+        env:
+          CHIPS: ${{ steps.chips.outputs.chips }}
         run: |
-          for chip in esp32 esp32s2 esp32s3 esp32s31 esp32c2 esp32c3 esp32c5 esp32c6 esp32c61 esp32h2 esp32p4; do
-            if cargo xtask build tests "$chip" --help >/dev/null 2>&1; then
-              echo "Building ALL hil-test tests for $chip"
-              cargo xtask build tests "$chip"
-            else
-              echo "Skipping $chip: not supported by this ref's xtask"
-            fi
+          for chip in $CHIPS; do
+            echo "Building ALL hil-test tests for $chip"
+            cargo xtask build tests "$chip"
           done
 
       - uses: actions/upload-artifact@v6
@@ -525,14 +538,12 @@ jobs:
         run: rm -rf target/tests
 
       - name: Build hil-test-radio tests
+        env:
+          CHIPS: ${{ steps.chips.outputs.chips }}
         run: |
-          for chip in esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c5 esp32c6 esp32c61 esp32h2; do
-            if cargo xtask build tests "$chip" hil-test-radio --help >/dev/null 2>&1; then
-              echo "Building ALL hil-test-radio tests for $chip"
-              cargo xtask build tests "$chip" hil-test-radio
-            else
-              echo "Skipping $chip: not supported by this ref's xtask"
-            fi
+          for chip in $CHIPS; do
+            echo "Building ALL hil-test-radio tests for $chip"
+            cargo xtask build tests "$chip" hil-test-radio
           done
 
       - uses: actions/upload-artifact@v6
@@ -583,6 +594,9 @@ jobs:
   # Device runs — aggregated by hil-gate (see below).
   hil-run:
     needs: [hil-build, hil-devtool]
+    # TEMPORARY (fork testing): forks have no HIL hardware. Skipping this also
+    # skips hil-gate, which ci-result counts as success.
+    if: github.repository == 'esp-rs/esp-hal'
     runs-on:
       labels: [self-hosted, "${{ matrix.target.runner }}"]
     strategy:
@@ -626,18 +640,13 @@ jobs:
   # Not gated by hil-gate or ci-result.
   hil-run-radio:
     needs: [hil-build, hil-devtool]
+    # TEMPORARY (fork testing): forks have no HIL hardware.
+    if: github.repository == 'esp-rs/esp-hal'
     runs-on:
       labels: [self-hosted, "${{ matrix.target.runner }}"]
     strategy:
       fail-fast: false
-      matrix:
-        target:
-          - soc: esp32c6
-            runner: esp32c6-radio
-            host: aarch64
-          - soc: esp32s3
-            runner: esp32s3-radio
-            host: aarch64
+      matrix: ${{ fromJSON(needs.hil-build.outputs.radio_matrix) }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -746,6 +755,7 @@ jobs:
       - esp-hal
       - docs
       - msrv
+      - xtensa-lld
       - host-tests
       - changelog
       - semver-check
