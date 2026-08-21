@@ -1,0 +1,130 @@
+name: Setup toolchains
+description: >-
+  Install the repo-wide pinned Rust toolchains for Xtensa and/or RISC-V targets.
+  Needs `jq` and a checkout of this repo at the workspace root, because the chip
+  defaults come from .github/chips.json. Do not use it in a job that checks out a
+  foreign ref such as a PR head or a release tag: it would resolve its inputs
+  against that tree. Call the upstream actions directly in those jobs.
+
+inputs:
+  channel:
+    description: 'Which pin to install: "current" or "msrv".'
+    required: false
+    default: current
+  xtensa:
+    description: When "true", install the Xtensa toolchain.
+    required: false
+    default: "false"
+  xtensa-buildtargets:
+    description: Comma-separated SoCs to build the Xtensa toolchain for. Defaults to every Xtensa chip in chips.json.
+    required: false
+    default: ""
+  xtensa-default:
+    description: When "true", make the Xtensa toolchain the rustup default.
+    required: false
+    default: "false"
+  riscv:
+    description: When "true", install the RISC-V toolchain.
+    required: false
+    default: "false"
+  riscv-targets:
+    description: '"all" for every RISC-V triple in chips.json, "none" for a host-only toolchain, or an explicit comma-separated list.'
+    required: false
+    default: all
+  riscv-extra-targets:
+    description: Comma-separated extra triples to append to the RISC-V toolchain.
+    required: false
+    default: ""
+  components:
+    description: Comma-separated components for the RISC-V toolchain.
+    required: false
+    default: rust-src
+
+outputs:
+  xtensa-version:
+    description: The Xtensa toolchain version for the selected channel.
+    value: ${{ steps.pins.outputs.xtensa-version }}
+  riscv-toolchain:
+    description: The rustup channel used for the RISC-V toolchain.
+    value: ${{ steps.pins.outputs.riscv-toolchain }}
+
+runs:
+  using: composite
+  steps:
+    # Single source of truth for the two toolchain pins CI exercises. Only the
+    # current Xtensa version is pinned here; it tracks espup releases rather
+    # than the MSRV, which is read from the tree below.
+    - id: pins
+      shell: bash
+      run: |
+        case '${{ inputs.channel }}' in
+          current)
+            echo "xtensa-version=1.97.0.0" >> "$GITHUB_OUTPUT"
+            echo "riscv-toolchain=stable" >> "$GITHUB_OUTPUT"
+            ;;
+          msrv)
+            # CI's MSRV is esp-hal's MSRV, which `cargo xtask release
+            # bump-msrv` maintains. The first `rust-version` in the file is the
+            # one in `[package]`. espup accepts a version prefix, so the same
+            # three-component value serves as both the espup version and the
+            # rustup channel. Note this resolves to the newest espup release
+            # matching the prefix, where the docs job used to pin an exact
+            # four-component version.
+            MSRV=$(sed -n 's/^rust-version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' esp-hal/Cargo.toml | head -n1)
+            if [ -z "$MSRV" ]; then
+              echo "::error::Could not read rust-version from esp-hal/Cargo.toml"
+              exit 1
+            fi
+            echo "Resolved MSRV: $MSRV"
+            echo "xtensa-version=$MSRV" >> "$GITHUB_OUTPUT"
+            echo "riscv-toolchain=$MSRV" >> "$GITHUB_OUTPUT"
+            ;;
+          *)
+            echo "::error::Unknown channel '${{ inputs.channel }}'; expected 'current' or 'msrv'"
+            exit 1
+            ;;
+        esac
+
+    # Chip-derived defaults, so adding a chip to chips.json does not require
+    # touching any workflow.
+    - id: chips
+      shell: bash
+      run: |
+        BUILDTARGETS='${{ inputs.xtensa-buildtargets }}'
+        if [ -z "$BUILDTARGETS" ]; then
+          BUILDTARGETS=$(jq -r '[.[] | select(.arch == "xtensa") | .soc] | join(",")' .github/chips.json)
+        fi
+        echo "buildtargets=$BUILDTARGETS" >> "$GITHUB_OUTPUT"
+
+        case '${{ inputs.riscv-targets }}' in
+          all)
+            # Order-preserving dedupe, so the triple list reads the same as
+            # chips.json rather than being alphabetised.
+            TARGETS=$(jq -r '
+              [.[] | select(.arch == "riscv") | ."rust-target"]
+              | reduce .[] as $t ([]; if index($t) then . else . + [$t] end)
+              | join(",")' .github/chips.json)
+            ;;
+          none) TARGETS="" ;;
+          *)    TARGETS='${{ inputs.riscv-targets }}' ;;
+        esac
+
+        EXTRA='${{ inputs.riscv-extra-targets }}'
+        if [ -n "$EXTRA" ]; then
+          TARGETS="${TARGETS:+$TARGETS,}$EXTRA"
+        fi
+        echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
+
+    - if: inputs.xtensa == 'true'
+      uses: esp-rs/xtensa-toolchain@v1.6
+      with:
+        buildtargets: ${{ steps.chips.outputs.buildtargets }}
+        default: ${{ inputs.xtensa-default }}
+        version: ${{ steps.pins.outputs.xtensa-version }}
+
+    - if: inputs.riscv == 'true'
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: ${{ steps.pins.outputs.riscv-toolchain }}
+        targets: ${{ steps.chips.outputs.targets }}
+        components: ${{ inputs.components }}
