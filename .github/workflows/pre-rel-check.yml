@@ -16,7 +16,8 @@ env:
 
 jobs:
   check:
-    runs-on: macos-m1-self-hosted
+    # TEMPORARY (fork testing): was macos-m1-self-hosted
+    runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'release:registry:compile-test') || contains(github.event.pull_request.labels.*.name, 'release:registry:ci'))) }}
 
     steps:

@@ -126,7 +126,8 @@ jobs:
   esp-hal:
     needs: calculate
     if: needs.calculate.outputs.run-build == 'true'
-    runs-on: macos-m1-self-hosted
+    # TEMPORARY (fork testing): was macos-m1-self-hosted
+    runs-on: ubuntu-latest
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       CI: 1
@@ -475,7 +476,8 @@ jobs:
   hil-build:
     needs: calculate
     if: needs.calculate.outputs.run-hil == 'true'
-    runs-on: macos-m1-self-hosted
+    # TEMPORARY (fork testing): was macos-m1-self-hosted
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.chips.outputs.matrix }}
       radio_matrix: ${{ steps.chips.outputs.radio_matrix }}
@@ -592,6 +594,9 @@ jobs:
   # Device runs — aggregated by hil-gate (see below).
   hil-run:
     needs: [hil-build, hil-devtool]
+    # TEMPORARY (fork testing): forks have no HIL hardware. Skipping this also
+    # skips hil-gate, which ci-result counts as success.
+    if: github.repository == 'esp-rs/esp-hal'
     runs-on:
       labels: [self-hosted, "${{ matrix.target.runner }}"]
     strategy:
@@ -635,6 +640,8 @@ jobs:
   # Not gated by hil-gate or ci-result.
   hil-run-radio:
     needs: [hil-build, hil-devtool]
+    # TEMPORARY (fork testing): forks have no HIL hardware.
+    if: github.repository == 'esp-rs/esp-hal'
     runs-on:
       labels: [self-hosted, "${{ matrix.target.runner }}"]
     strategy:

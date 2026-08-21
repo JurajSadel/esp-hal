@@ -73,7 +73,8 @@ env:
 
 jobs:
   build:
-    runs-on: macos-m1-self-hosted
+    # TEMPORARY (fork testing): was macos-m1-self-hosted
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.chips.outputs.matrix }}
       radio_matrix: ${{ steps.chips.outputs.radio_matrix }}
@@ -266,7 +267,8 @@ jobs:
 
   hil:
     needs: [build, devtool]
-    if: ${{ inputs.package != 'hil-test-radio' }}
+    # TEMPORARY (fork testing): forks have no HIL hardware.
+    if: ${{ github.repository == 'esp-rs/esp-hal' && inputs.package != 'hil-test-radio' }}
     runs-on:
       labels: [self-hosted, "${{ matrix.target.runner }}"]
     strategy:
@@ -323,7 +325,9 @@ jobs:
   # runner, which causes this job to be skipped entirely.
   hil-radio:
     needs: [build, devtool]
+    # TEMPORARY (fork testing): forks have no HIL hardware.
     if: >
+      github.repository == 'esp-rs/esp-hal' &&
       inputs.package != 'hil-test' &&
       needs.build.outputs.radio_matrix != '{"target":[]}'
     runs-on:
