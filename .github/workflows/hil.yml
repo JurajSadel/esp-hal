@@ -255,8 +255,7 @@ jobs:
       # xtask runs on the AArch64 HIL runners as a host tool.
       # We build the actual tests separately using the correct toolchain.
       # Cache the cross-compiled binary, it rarely changes so this avoids the
-      # expensive cross build.  Restored after the dependency cache, which may
-      # replace the target directory while restoring its own.
+      # expensive cross build.
       - name: Cache xtask binary
         id: xtask-cache
         uses: actions/cache@v6
@@ -292,9 +291,7 @@ jobs:
     if: ${{ inputs.package != 'hil-test-radio' }}
     # When called from ci.yml, hil-gate below decides the verdict from the ≥50%
     # rule, so a single flaky runner must not fail the run and with it the
-    # caller's job. A dispatch has no such reader: hil-status.js copies the run
-    # conclusion straight into the PR comment, so there a failing leg has to
-    # keep failing the run or the comment would claim success.
+    # caller's job.
     continue-on-error: ${{ inputs.branch == '' }}
     runs-on:
       labels: [self-hosted, "${{ matrix.target.runner }}"]
@@ -355,9 +352,6 @@ jobs:
     if: >
       inputs.package != 'hil-test' &&
       needs.build.outputs.radio_matrix != '{"target":[]}'
-    # Radio runs are informational on the ci.yml path and no gate covers them,
-    # so they must not fail the run there. On a dispatch they are the point of
-    # the run, so a failure must still show up red in the PR comment.
     continue-on-error: ${{ inputs.branch == '' }}
     runs-on:
       labels: [self-hosted, "${{ matrix.target.runner }}"]
@@ -447,15 +441,6 @@ jobs:
   # Merge gate for hil-run matrix legs.  Blocks when ≥50% of legs that actually
   # ran tests failed or were cancelled.  Skipped legs (no ELFs for that chip)
   # are excluded.  hil-run-radio is not part of this gate.
-  #
-  # This is what makes the workflow safe to call from ci.yml: hil-run tolerates
-  # its own failures, so the run's conclusion -- and therefore the caller's job
-  # -- comes from this verdict instead of from individual runners.
-  #
-  # Only on the workflow_call path.  A dispatch needs no gate: hil-run keeps its
-  # own failures there, and hil-status.js copies the run conclusion into the PR
-  # comment, so gating as well could only turn a comment red that used to be
-  # green.
   hil-gate:
     needs: [build, hil-run]
     if: >
@@ -465,9 +450,6 @@ jobs:
       needs.hil-run.result != 'skipped'
     runs-on: ubuntu-latest
     steps:
-      # Deliberately not the dispatch-aware checkout used by the jobs above:
-      # the gate script has to come from this repo, not from the arbitrary ref a
-      # dispatch points at, or a PR could rewrite its own merge gate.
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1

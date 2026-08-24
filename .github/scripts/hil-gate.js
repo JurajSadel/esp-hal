@@ -2,10 +2,6 @@ const RUN_TESTS_STEP = "Run Tests";
 
 function isHilRunMatrixJob(name) {
   // Matches "hil-run (…)" but not "hil-run-radio (…)".
-  //
-  // A reusable workflow's jobs are reported as "<caller job> / <job> (…)", so
-  // the same leg is "hil-run (esp32c3)" when hil.yml is dispatched directly and
-  // "hil / hil-run (esp32c3)" when ci.yml calls it. Accept either.
   return /(?:^|\/\s*)hil-run \(/i.test(String(name || ""));
 }
 
@@ -24,10 +20,6 @@ function classifyMatrixJob(job) {
 
   const conclusion = runTests.conclusion;
   if (conclusion === "skipped") {
-    // Two very different reasons land here: the guard step deliberately skipped
-    // a chip that had no ELFs, or an earlier step failed and took this one with
-    // it. Distinguish on the sibling steps rather than on job.conclusion, which
-    // job-level continue-on-error may report as success even when the job failed.
     if (hasFailedStep(steps)) {
       return { kind: "failed" };
     }

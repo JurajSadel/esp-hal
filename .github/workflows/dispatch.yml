@@ -263,8 +263,6 @@ jobs:
             const chips = require('./.github/chips.json');
             const body = context.payload.comment.body;
 
-            // Prefix tests mirror the job conditions these three jobs used
-            // before they were merged.
             let mode, selected, kind, maxPolls = 60, error = '';
             if (body.startsWith('/hil quick')) {
               mode = 'quick';
@@ -284,8 +282,6 @@ jobs:
               error = res.error;
             }
 
-            // `quick` and `full` are stable markers for findHilRun; a per-chip
-            // run is identified by the chip list itself.
             core.setOutput('selector', mode === 'chips' ? selected : mode);
             core.setOutput('mode', mode);
             core.setOutput('chips', selected);

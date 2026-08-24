@@ -212,8 +212,6 @@ jobs:
           # there can never be restored. Restore everywhere, save elsewhere.
           save-if: ${{ github.event_name != 'merge_group' }}
 
-      # The matrix group is the architecture, so the chip list for this leg is
-      # just the chips.json entries with that `arch`.
       - name: Resolve chips for this group
         id: chips
         shell: bash
@@ -276,16 +274,12 @@ jobs:
           shared-key: msrv-${{ matrix.group }}
           save-if: ${{ github.event_name != 'merge_group' }}
 
-      # The matrix group is the architecture, so the chip list for this leg is
-      # just the chips.json entries with that `arch`.
       - name: Resolve chips for this group
         id: chips
         run: |
           echo "chips=$(jq -r --arg a '${{ matrix.group }}' \
             '[.[] | select(.arch == $a) | .soc] | join(",")' .github/chips.json)" >> "$GITHUB_OUTPUT"
 
-      # Verify the MSRV for all chips by running a lint session. The Xtensa MSRV
-      # lives in the `esp` toolchain rather than a numbered channel.
       - name: msrv lint (esp-hal)
         run: |
           cargo xtask lint-packages --chips ${{ steps.chips.outputs.chips }} \
@@ -470,22 +464,8 @@ jobs:
     secrets: inherit
 
   # --------------------------------------------------------------------------
-  # HIL
-  #
-  # The entire pipeline -- test builds, the cross-compiled runner tool, the
-  # device runs and the ≥50% merge gate -- lives in hil.yml, which the `/hil`
-  # slash command dispatches too. Calling it keeps one implementation rather
-  # than two that drift apart. `chips: all` with `package: all` is what this
-  # workflow used to spell out inline.
-  #
-  # A job that calls a reusable workflow cannot set continue-on-error, so the
-  # failure tolerance lives inside hil.yml instead: its hil-run legs absorb
-  # their own failures and its hil-gate condenses them into one verdict, which
-  # is what this job's result reports.
-  #
-  # Note DEFMT_LOG above does not reach it -- a caller's workflow-level env is
-  # not propagated -- so HIL builds take their defmt level from the `[env]`
-  # block in each hil-test*/.cargo/config.toml.
+  # HIL — build jobs gate artifacts; hil-gate gates device runs (≥50% rule).
+
   hil:
     needs: calculate
     if: needs.calculate.outputs.run-hil == 'true'
@@ -502,10 +482,9 @@ jobs:
   # Skipped jobs (due to calculate outputs) are treated as success.
   # Failed or cancelled jobs cause this gate to fail.
   #
-  # `hil` stands in for the whole HIL pipeline: its result is hil.yml's own
-  # conclusion, which fails if the test builds or the runner tool fail, or if
-  # hil-gate finds ≥50% of the executed device legs failed.  Radio runs remain
-  # informational and cannot fail it.
+  # hil-build gates test compilation, and hil-devtool gates the runner tool.
+  # hil-gate gates device runs when ≥50% of executed hil-run matrix legs fail.
+  # hil-run-radio is informational only.
   ci-result:
     if: ${{ always() }}
     needs:
