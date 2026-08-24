@@ -2,7 +2,13 @@ const RUN_TESTS_STEP = "Run Tests";
 
 function isHilRunMatrixJob(name) {
   // Matches "hil-run (…)" but not "hil-run-radio (…)".
-  return /^hil-run \(/i.test(String(name || ""));
+  return /(?:^|\/\s*)hil-run \(/i.test(String(name || ""));
+}
+
+function hasFailedStep(steps) {
+  return steps.some(
+    (s) => s.conclusion === "failure" || s.conclusion === "cancelled",
+  );
 }
 
 function classifyMatrixJob(job) {
@@ -14,21 +20,10 @@ function classifyMatrixJob(job) {
 
   const conclusion = runTests.conclusion;
   if (conclusion === "skipped") {
-    // A successful job intentionally skipped this chip because it had no ELFs.
-    // An unsuccessful job skipped this step because an earlier step failed.
-    if (job.conclusion === "success") {
-      return { kind: "skipped" };
-    }
-    if (
-      job.conclusion === "failure" ||
-      job.conclusion === "cancelled" ||
-      job.conclusion === null
-    ) {
+    if (hasFailedStep(steps)) {
       return { kind: "failed" };
     }
-    return {
-      error: `job "${job.name}" has skipped "${RUN_TESTS_STEP}" step and unexpected conclusion: ${job.conclusion}`,
-    };
+    return { kind: "skipped" };
   }
   if (conclusion === "success") {
     return { kind: "passed" };

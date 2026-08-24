@@ -1,6 +1,6 @@
 # esp-hal agent instructions
 
-Bare-metal `no_std` Rust HAL for Espressif SoCs. MSRV: **1.95.0** (source: `MSRV` env in `.github/workflows/ci.yml`).
+Bare-metal `no_std` Rust HAL for Espressif SoCs. MSRV: see `rust-version` in `esp-hal/Cargo.toml`.
 
 ## Chip reference
 

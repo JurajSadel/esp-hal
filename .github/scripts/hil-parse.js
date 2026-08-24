@@ -1,16 +1,4 @@
-const DEFAULT_ALLOWED = [
-  "esp32c2",
-  "esp32c3",
-  "esp32c5",
-  "esp32c6",
-  "esp32c61",
-  "esp32h2",
-  "esp32p4",
-  "esp32s31",
-  "esp32",
-  "esp32s2",
-  "esp32s3",
-];
+const DEFAULT_ALLOWED = require("../chips.json").map((c) => c.soc);
 
 function parsePackage(body) {
   const text = String(body || "").trim().toLowerCase();
