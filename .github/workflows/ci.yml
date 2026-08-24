@@ -470,267 +470,30 @@ jobs:
     secrets: inherit
 
   # --------------------------------------------------------------------------
-  # HIL — build jobs gate artifacts; hil-gate gates device runs (≥50% rule).
-
-  hil-build:
+  # HIL
+  #
+  # The entire pipeline -- test builds, the cross-compiled runner tool, the
+  # device runs and the ≥50% merge gate -- lives in hil.yml, which the `/hil`
+  # slash command dispatches too. Calling it keeps one implementation rather
+  # than two that drift apart. `chips: all` with `package: all` is what this
+  # workflow used to spell out inline.
+  #
+  # A job that calls a reusable workflow cannot set continue-on-error, so the
+  # failure tolerance lives inside hil.yml instead: its hil-run legs absorb
+  # their own failures and its hil-gate condenses them into one verdict, which
+  # is what this job's result reports.
+  #
+  # Note DEFMT_LOG above does not reach it -- a caller's workflow-level env is
+  # not propagated -- so HIL builds take their defmt level from the `[env]`
+  # block in each hil-test*/.cargo/config.toml.
+  hil:
     needs: calculate
     if: needs.calculate.outputs.run-hil == 'true'
-    runs-on: macos-m1-self-hosted
-    outputs:
-      matrix: ${{ steps.chips.outputs.matrix }}
-      radio_matrix: ${{ steps.chips.outputs.radio_matrix }}
-      chips: ${{ steps.chips.outputs.chips }}
-    steps:
-      # Checked out before resolving the matrix because the chip metadata comes
-      # from the tree.
-      - uses: actions/checkout@v6
-
-      - name: Resolve chip matrix
-        id: chips
-        run: |
-          ALL_CHIPS=$(jq -c '[.[] | {soc, "rust-target", runner, host}]' .github/chips.json)
-
-          # A `radio-runner` entry marks a chip with a dedicated radio HIL
-          # runner; it takes the place of `runner` for the radio matrix.
-          RADIO_CHIPS=$(jq -c '
-            [.[] | select(has("radio-runner"))
-                 | {soc, "rust-target", runner: ."radio-runner", host}]' .github/chips.json)
-
-          echo "matrix={\"target\":$ALL_CHIPS}" >> "$GITHUB_OUTPUT"
-          echo "radio_matrix={\"target\":$RADIO_CHIPS}" >> "$GITHUB_OUTPUT"
-
-          # Space-separated SoC list so the build step below iterates over the
-          # same source of truth as the device-run matrix.
-          echo "chips=$(echo "$ALL_CHIPS" | jq -r '[.[].soc] | join(" ")')" >> "$GITHUB_OUTPUT"
-
-      - uses: ./.github/actions/setup-toolchains
-        with:
-          xtensa: "true"
-          xtensa-default: "true"
-
-      - uses: ./.github/actions/setup-nightly
-        with:
-          targets: all
-          components: rust-src
-          alias: "true"
-
-      - name: Build hil-test tests
-        env:
-          CHIPS: ${{ steps.chips.outputs.chips }}
-        run: |
-          for chip in $CHIPS; do
-            echo "Building ALL hil-test tests for $chip"
-            cargo xtask build tests "$chip"
-          done
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: hil-tests
-          path: target/tests/
-          if-no-files-found: error
-
-      # Build radio HIL tests (hil-test-radio).  Chips for which the radio
-      # package has no applicable binaries produce no output and are silently
-      # skipped via `if-no-files-found: ignore`.
-      - name: Reset tests output directory for radio build
-        run: rm -rf target/tests
-
-      - name: Build hil-test-radio tests
-        env:
-          CHIPS: ${{ steps.chips.outputs.chips }}
-        run: |
-          for chip in $CHIPS; do
-            echo "Building ALL hil-test-radio tests for $chip"
-            cargo xtask build tests "$chip" hil-test-radio
-          done
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: hil-tests-radio
-          path: target/tests/
-          if-no-files-found: ignore
-
-  hil-devtool:
-    needs: calculate
-    if: needs.calculate.outputs.run-hil == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Cache Dependencies
-        uses: Swatinem/rust-cache@v2
-
-      # xtask runs on the AArch64 HIL runners as a host tool.
-      # Restore the binary after the dependency cache, which may replace the
-      # target directory while restoring its own cache.
-      - name: Cache xtask binary
-        id: xtask-cache
-        uses: actions/cache@v6
-        with:
-          path: target/aarch64-unknown-linux-gnu/release/esp-devtool
-          key: xtask-hil-aarch64-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'xtask/**', 'xtask-mcp-macros/**') }}
-
-      - name: Install cross-compilation target
-        if: steps.xtask-cache.outputs.cache-hit != 'true'
-        run: rustup target add aarch64-unknown-linux-gnu
-
-      - uses: taiki-e/install-action@v2
-        if: steps.xtask-cache.outputs.cache-hit != 'true'
-        with:
-          tool: cross
-
-      - name: Build xtask for HIL runners
-        if: steps.xtask-cache.outputs.cache-hit != 'true'
-        run: cross build --release --target aarch64-unknown-linux-gnu -p esp-devtool
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: xtask-aarch64
-          path: target/aarch64-unknown-linux-gnu/release/esp-devtool
-          if-no-files-found: error
-
-  # Device runs — aggregated by hil-gate (see below).
-  hil-run:
-    needs: [hil-build, hil-devtool]
-    runs-on:
-      labels: [self-hosted, "${{ matrix.target.runner }}"]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.hil-build.outputs.matrix) }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: hil-tests
-          path: tests/
-        continue-on-error: true
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: xtask-${{ matrix.target.host }}
-
-      - name: Skip if this target wasn't built
-        id: guard
-        run: |
-          if [ ! -d "tests/${{ matrix.target.soc }}" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "No tests for ${{ matrix.target.soc }} in this run; skipping."
-          fi
-
-      - name: Run Tests
-        if: steps.guard.outputs.skip != 'true'
-        run: |
-          [ -f ~/setup.sh ] && source ~/setup.sh
-
-          export PATH=$PATH:/home/espressif/.cargo/bin
-          chmod +x esp-devtool
-          ./esp-devtool run elfs ${{ matrix.target.soc }} tests/${{ matrix.target.soc }}
-
-      - name: Clean up
-        if: always()
-        run: |
-          rm -rf tests/ || true
-          rm -f esp-devtool || true
-
-  # Radio HIL device runs — wifi/BT capable chips on dedicated radio runners.
-  # Not gated by hil-gate or ci-result.
-  hil-run-radio:
-    needs: [hil-build, hil-devtool]
-    runs-on:
-      labels: [self-hosted, "${{ matrix.target.runner }}"]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.hil-build.outputs.radio_matrix) }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: hil-tests-radio
-          path: tests/
-        continue-on-error: true
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: xtask-${{ matrix.target.host }}
-
-      - name: Skip if this target wasn't built
-        id: guard
-        run: |
-          if [ ! -d "tests/${{ matrix.target.soc }}" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "No radio tests for ${{ matrix.target.soc }} in this run; skipping."
-          fi
-
-      - name: Reset ESP USB-JTAG devices
-        if: steps.guard.outputs.skip != 'true'
-        timeout-minutes: 1
-        shell: bash
-        run: |
-          # The support firmware runs forever on the harness probe; a previous
-          # run can leave the in-chip USB-Serial-JTAG bridge wedged so the next
-          # flash hangs. Issue USBDEVFS_RESET to force a clean re-enumeration.
-          python3 - <<'PY'
-          import fcntl, glob, os, time
-          USBDEVFS_RESET = (ord('U') << 8) | 20  # _IO('U', 20)
-          reset_any = False
-          for dev in glob.glob('/sys/bus/usb/devices/*'):
-              try:
-                  vid = open(os.path.join(dev, 'idVendor')).read().strip().lower()
-                  pid = open(os.path.join(dev, 'idProduct')).read().strip().lower()
-              except OSError:
-                  continue
-              if (vid, pid) != ('303a', '1001'):
-                  continue
-              busnum = int(open(os.path.join(dev, 'busnum')).read())
-              devnum = int(open(os.path.join(dev, 'devnum')).read())
-              node = f'/dev/bus/usb/{busnum:03d}/{devnum:03d}'
-              try:
-                  with open(node, 'wb') as f:
-                      fcntl.ioctl(f, USBDEVFS_RESET, 0)
-                  print(f'reset {node} ({vid}:{pid})')
-                  reset_any = True
-              except OSError as e:
-                  print(f'failed to reset {node}: {e}')
-          if reset_any:
-              time.sleep(2)  # allow udev to re-enumerate before probe-rs runs
-          PY
-
-      - name: Run Radio Tests
-        if: steps.guard.outputs.skip != 'true'
-        timeout-minutes: 3
-        run: |
-          [ -f ~/setup.sh ] && source ~/setup.sh
-
-          export PATH=$PATH:/home/espressif/.cargo/bin
-          chmod +x esp-devtool
-
-          ./esp-devtool run elfs ${{ matrix.target.soc }} tests/${{ matrix.target.soc }}
-
-      - name: Clean up
-        if: always()
-        run: |
-          rm -rf tests/ || true
-          rm -f esp-devtool || true
-
-  # Merge gate for hil-run matrix legs.  Blocks when ≥50% of legs that actually
-  # ran tests failed or were cancelled.  Skipped legs (no ELFs for that chip)
-  # are excluded.  hil-run-radio is not part of this gate.
-  hil-gate:
-    needs: [hil-build, hil-run]
-    if: >
-      always() &&
-      needs.hil-build.result == 'success' &&
-      needs.hil-run.result != 'skipped'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-
-      - name: Evaluate hil-run results
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { evaluateHilGate } = require('./.github/scripts/hil-gate.js');
-            await evaluateHilGate({ github, context, core });
+    uses: ./.github/workflows/hil.yml
+    with:
+      chips: all
+      package: all
+    secrets: inherit
 
   # --------------------------------------------------------------------------
   # Gate job for branch protection
@@ -739,9 +502,10 @@ jobs:
   # Skipped jobs (due to calculate outputs) are treated as success.
   # Failed or cancelled jobs cause this gate to fail.
   #
-  # hil-build gates test compilation, and hil-devtool gates the runner tool.
-  # hil-gate gates device runs when ≥50% of executed hil-run matrix legs fail.
-  # hil-run-radio is informational only.
+  # `hil` stands in for the whole HIL pipeline: its result is hil.yml's own
+  # conclusion, which fails if the test builds or the runner tool fail, or if
+  # hil-gate finds ≥50% of the executed device legs failed.  Radio runs remain
+  # informational and cannot fail it.
   ci-result:
     if: ${{ always() }}
     needs:
@@ -752,9 +516,7 @@ jobs:
       - host-tests
       - changelog
       - semver-check
-      - hil-build
-      - hil-devtool
-      - hil-gate
+      - hil
     runs-on: ubuntu-latest
     steps:
       - name: Check CI results
