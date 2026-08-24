@@ -2,7 +2,17 @@ const RUN_TESTS_STEP = "Run Tests";
 
 function isHilRunMatrixJob(name) {
   // Matches "hil-run (…)" but not "hil-run-radio (…)".
-  return /^hil-run \(/i.test(String(name || ""));
+  //
+  // A reusable workflow's jobs are reported as "<caller job> / <job> (…)", so
+  // the same leg is "hil-run (esp32c3)" when hil.yml is dispatched directly and
+  // "hil / hil-run (esp32c3)" when ci.yml calls it. Accept either.
+  return /(?:^|\/\s*)hil-run \(/i.test(String(name || ""));
+}
+
+function hasFailedStep(steps) {
+  return steps.some(
+    (s) => s.conclusion === "failure" || s.conclusion === "cancelled",
+  );
 }
 
 function classifyMatrixJob(job) {
@@ -14,21 +24,14 @@ function classifyMatrixJob(job) {
 
   const conclusion = runTests.conclusion;
   if (conclusion === "skipped") {
-    // A successful job intentionally skipped this chip because it had no ELFs.
-    // An unsuccessful job skipped this step because an earlier step failed.
-    if (job.conclusion === "success") {
-      return { kind: "skipped" };
-    }
-    if (
-      job.conclusion === "failure" ||
-      job.conclusion === "cancelled" ||
-      job.conclusion === null
-    ) {
+    // Two very different reasons land here: the guard step deliberately skipped
+    // a chip that had no ELFs, or an earlier step failed and took this one with
+    // it. Distinguish on the sibling steps rather than on job.conclusion, which
+    // job-level continue-on-error may report as success even when the job failed.
+    if (hasFailedStep(steps)) {
       return { kind: "failed" };
     }
-    return {
-      error: `job "${job.name}" has skipped "${RUN_TESTS_STEP}" step and unexpected conclusion: ${job.conclusion}`,
-    };
+    return { kind: "skipped" };
   }
   if (conclusion === "success") {
     return { kind: "passed" };
