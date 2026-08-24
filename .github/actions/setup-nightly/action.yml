@@ -5,9 +5,7 @@ inputs:
   targets:
     description: >-
       Comma-separated list of target triples to install, or "all" for every RISC-V
-      triple in chips.json. "all" needs `jq` and a checkout of this repo at the
-      workspace root, so jobs that check out a foreign ref must pass an explicit
-      list instead (see hil.yml).
+      triple in chips.json.
     required: false
     default: ""
   components:

@@ -263,15 +263,14 @@ jobs:
             const chips = require('./.github/chips.json');
             const body = context.payload.comment.body;
 
-            // Prefix tests mirror the job conditions these three jobs used
-            // before they were merged.
-            let mode, selected, kind, maxPolls = 60, error = '';
+            // Even a quick run can legitimately take well over 15 minutes once
+            // queueing is counted, and a full one always does, so give every
+            // mode the same 45 minute budget (180 * 15s).
+            let mode, selected, kind, maxPolls = 180, error = '';
             if (body.startsWith('/hil quick')) {
               mode = 'quick';
               selected = chips.filter(c => c.quick).map(c => c.soc).join(' ');
               kind = 'HIL (quick)';
-              // Quick runs can legitimately take >15min, especially with queueing.
-              maxPolls = 180;
             } else if (body.startsWith('/hil full')) {
               mode = 'full';
               selected = chips.map(c => c.soc).join(' ');
@@ -284,8 +283,6 @@ jobs:
               error = res.error;
             }
 
-            // `quick` and `full` are stable markers for findHilRun; a per-chip
-            // run is identified by the chip list itself.
             core.setOutput('selector', mode === 'chips' ? selected : mode);
             core.setOutput('mode', mode);
             core.setOutput('chips', selected);
@@ -375,9 +372,7 @@ jobs:
     needs: auth
     if:
       github.event_name == 'issue_comment' && needs.auth.outputs.allowed != 'true' &&
-      (startsWith(github.event.comment.body, '/hil quick') ||
-      startsWith(github.event.comment.body, '/hil full')  ||
-      startsWith(github.event.comment.body, '/hil ')      ||
+      (startsWith(github.event.comment.body, '/hil ') ||
       startsWith(github.event.comment.body, '/test-size'))
     runs-on: ubuntu-latest
     steps:
@@ -437,9 +432,10 @@ jobs:
 
       - name: Extract parameters from comment
         id: extract
+        env:
+          COMMENT: ${{ github.event.comment.body }}
         run: |
           # Expected format: /test-size example_name chip(s)
-          COMMENT="${{ github.event.comment.body }}"
           # Use only the line that holds the command (let users add free-form
           # text in the rest of the comment) and strip any CR characters that
           # GitHub may include on CRLF line endings.

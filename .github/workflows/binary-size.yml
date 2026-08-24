@@ -75,7 +75,7 @@ jobs:
           xtensa-default: "true"
           riscv: ${{ steps.target.outputs.arch == 'riscv' }}
           riscv-targets: ${{ steps.target.outputs.rust-target }}
-          components: rust-src, llvm-tools
+          riscv-components: rust-src, llvm-tools
 
       - name: Install Binutils and Hub
         run: |

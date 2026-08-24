@@ -1,10 +1,6 @@
 name: Setup toolchains
 description: >-
   Install the repo-wide pinned Rust toolchains for Xtensa and/or RISC-V targets.
-  Needs `jq` and a checkout of this repo at the workspace root, because the chip
-  defaults come from .github/chips.json. Do not use it in a job that checks out a
-  foreign ref such as a PR head or a release tag: it would resolve its inputs
-  against that tree. Call the upstream actions directly in those jobs.
 
 inputs:
   channel:
@@ -15,12 +11,6 @@ inputs:
     description: Xtensa Rust release for the "current" channel.
     required: false
     default: "1.97.0.0"
-  msrv-xtensa-version:
-    description: >-
-      Xtensa Rust release for the "msrv" channel. Must be esp-hal's rust-version
-      plus a subpatch, which is checked below.
-    required: false
-    default: "1.95.0.0"
   xtensa:
     description: When "true", install the Xtensa toolchain.
     required: false
@@ -45,8 +35,9 @@ inputs:
     description: Comma-separated extra triples to append to the RISC-V toolchain.
     required: false
     default: ""
-  components:
-    description: Comma-separated components for the RISC-V toolchain.
+  riscv-components:
+    description: >-
+      Comma-separated components for the RISC-V toolchain.
     required: false
     default: rust-src
 
@@ -67,7 +58,6 @@ runs:
     - id: pins
       shell: bash
       run: |
-        MSRV_XTENSA='${{ inputs.msrv-xtensa-version }}'
         case '${{ inputs.channel }}' in
           current)
             echo "xtensa-version=${{ inputs.current-xtensa-version }}" >> "$GITHUB_OUTPUT"
@@ -80,12 +70,9 @@ runs:
               echo "::error::Could not read rust-version from esp-hal/Cargo.toml"
               exit 1
             fi
-            if [ "${MSRV_XTENSA%.*}" != "$MSRV" ]; then
-              echo "::error::MSRV_XTENSA is $MSRV_XTENSA but esp-hal rust-version is $MSRV; update this action"
-              exit 1
-            fi
-            echo "Resolved MSRV: $MSRV (Xtensa $MSRV_XTENSA)"
-            echo "xtensa-version=$MSRV_XTENSA" >> "$GITHUB_OUTPUT"
+            echo "Resolved MSRV: $MSRV"
+            # espup resolves this three-component prefix to the newest 1.x.y.* release.
+            echo "xtensa-version=$MSRV" >> "$GITHUB_OUTPUT"
             echo "riscv-toolchain=$MSRV" >> "$GITHUB_OUTPUT"
             ;;
           *)
@@ -136,4 +123,4 @@ runs:
       with:
         toolchain: ${{ steps.pins.outputs.riscv-toolchain }}
         targets: ${{ steps.chips.outputs.targets }}
-        components: ${{ inputs.components }}
+        components: ${{ inputs.riscv-components }}
