@@ -1,10 +1,6 @@
 name: Setup toolchains
 description: >-
   Install the repo-wide pinned Rust toolchains for Xtensa and/or RISC-V targets.
-  Needs `jq` and a checkout of this repo at the workspace root, because the chip
-  defaults come from .github/chips.json. Do not use it in a job that checks out a
-  foreign ref such as a PR head or a release tag: it would resolve its inputs
-  against that tree. Call the upstream actions directly in those jobs.
 
 inputs:
   channel:
