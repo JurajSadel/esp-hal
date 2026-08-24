@@ -163,7 +163,7 @@ impl RegisterAccess for crate::peripherals::ADC1<'_> {
 
     fn start_sample() {
         // ADC1 must be idle before a new software trigger. See
-        // https://github.com/espressif/esp-idf/blob/v5.5/components/hal/esp32s3/include/hal/adc_ll.h#L968
+        // https://github.com/espressif/esp-idf/blob/v5.5/components/hal/esp32s3/include/hal/adc_ll.h#L973
         while meas1_busy() {}
 
         SENS::regs()
