@@ -31,6 +31,13 @@ system_clocks = { clock_tree = [
         { name = "LS", outputs = "AHB_LS_DIV" },
     ] },
     { name = "APB_CLK", type = "generic", params = { divisor = "0, 1, 3" }, output = "AHB_CLK / (divisor + 1)" },
+
+    # No crypto clock node is modelled here. The chip has no crypto clock source select: PCR has no
+    # SEC_CLK_SEL field, IDF's esp_crypto_clk_init() is empty and sec_ll_crypto_clk_src_sel()
+    # ignores its argument. Per the TRM the clock is derived from HP_ROOT_CLK and runs at up to
+    # 160 MHz, but the exact relation is not spelled out, so it is left out rather than guessed.
+    # The only control is the per-module CLK_EN gates, which the peripheral guards drive.
+
     # configurable, but automatic - there's no point in making APB_DECREASE_DIV part of the model as consumers will always see APB_CLK
     # { name = "APB_DECREASE_DIV", type = "generic", output = "APB_DIV / (divisor + 1)" },
 

@@ -397,6 +397,84 @@ fn release_uart0_sclk() {
 #[cfg(not(soc_has_clock_node_uart_function_clock))]
 fn release_uart0_sclk() {}
 
+/// Guard for the clock shared by the crypto accelerators.
+///
+/// Drops its request when dropped. If no request was needed, this is a no-op.
+#[must_use = "dropping the guard releases the crypto clock"]
+#[allow(dead_code, reason = "used only by the unstable crypto drivers")]
+pub(crate) struct CryptoClockGuard {
+    release: bool,
+}
+
+#[allow(dead_code, reason = "used only by the unstable crypto drivers")]
+impl CryptoClockGuard {
+    /// Request the clock that drives the crypto accelerators.
+    ///
+    /// The clock is called `CRYPTO_CLK` on most chips, and `CRYPTO_PWM_CLK` on the ESP32-S3, where
+    /// the MCPWM peripherals share it. This only requests the clock when it already has a
+    /// configuration; on chips that do not model it at all, the guard is a no-op.
+    #[inline(always)]
+    pub(crate) fn new() -> Self {
+        Self {
+            release: Self::request(),
+        }
+    }
+
+    #[cfg(soc_has_clock_node_crypto_clk)]
+    fn request() -> bool {
+        crate::soc::clocks::ClockTree::with(|clocks| {
+            if crate::soc::clocks::crypto_clk_config(clocks).is_some() {
+                crate::soc::clocks::request_crypto_clk(clocks);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    #[cfg(soc_has_clock_node_crypto_pwm_clk)]
+    fn request() -> bool {
+        crate::soc::clocks::ClockTree::with(|clocks| {
+            if crate::soc::clocks::crypto_pwm_clk_config(clocks).is_some() {
+                crate::soc::clocks::request_crypto_pwm_clk(clocks);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    #[cfg(not(any(soc_has_clock_node_crypto_clk, soc_has_clock_node_crypto_pwm_clk)))]
+    fn request() -> bool {
+        false
+    }
+
+    #[cfg(soc_has_clock_node_crypto_clk)]
+    fn release() {
+        crate::soc::clocks::ClockTree::with(|clocks| {
+            crate::soc::clocks::release_crypto_clk(clocks);
+        });
+    }
+
+    #[cfg(soc_has_clock_node_crypto_pwm_clk)]
+    fn release() {
+        crate::soc::clocks::ClockTree::with(|clocks| {
+            crate::soc::clocks::release_crypto_pwm_clk(clocks);
+        });
+    }
+
+    #[cfg(not(any(soc_has_clock_node_crypto_clk, soc_has_clock_node_crypto_pwm_clk)))]
+    fn release() {}
+}
+
+impl Drop for CryptoClockGuard {
+    fn drop(&mut self) {
+        if self.release {
+            Self::release();
+        }
+    }
+}
+
 /// Retrieves the reason for the last reset as a SocResetReason enum value.
 /// Returns `None` if the reset reason cannot be determined.
 #[instability::unstable]

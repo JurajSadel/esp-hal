@@ -23,7 +23,7 @@ use crate::{
     pac::{self, ecc::mult_conf::KEY_LENGTH},
     peripherals::{ECC, Interrupt},
     private::Sealed,
-    system::{self, GenericPeripheralGuard},
+    system::{self, CryptoClockGuard, GenericPeripheralGuard},
     work_queue::{Handle, Poll, Status, VTable, WorkQueue, WorkQueueDriver, WorkQueueFrontend},
 };
 
@@ -374,6 +374,8 @@ pub struct Ecc<'d, Dm: DriverMode> {
     phantom: PhantomData<Dm>,
     _memory_guard: EccMemoryPowerGuard,
     _guard: GenericPeripheralGuard<{ system::Peripheral::Ecc as u8 }>,
+    // Declared last so the peripheral is disabled before the clock is released.
+    _clock_guard: CryptoClockGuard,
 }
 
 struct EccMemoryPowerGuard;
@@ -509,11 +511,13 @@ for_each_ecc_working_mode! {
 impl<'d> Ecc<'d, Blocking> {
     /// Create a new instance in [Blocking] mode.
     pub fn new(ecc: ECC<'d>, config: Config) -> Self {
+        let clock_guard = CryptoClockGuard::new();
         let this = Self {
             _ecc: ecc,
             phantom: PhantomData,
             _memory_guard: EccMemoryPowerGuard::new(),
             _guard: GenericPeripheralGuard::new(),
+            _clock_guard: clock_guard,
         };
 
         this.info().apply_config(&config);

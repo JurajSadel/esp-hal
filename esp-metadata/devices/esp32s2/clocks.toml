@@ -37,6 +37,11 @@ system_clocks = { clock_tree = [
         { name = "RC_FAST", outputs = "CPU_CLK" },
     ] },
 
+    # No crypto clock node is modelled here. The chip has no crypto clock source select: IDF's
+    # esp_crypto_clk_init() is empty and sec_ll_crypto_clk_src_sel() ignores its argument, and
+    # DPORT only exposes the per-module CRYPTO_*_CLK_EN gates, which the peripheral guards drive.
+    # This chip has no MCPWM either, so the ESP32-S3's CRYPTO_PWM_CLK has no counterpart here.
+
     # REF_TICK, configuring CPU clock needs to ensure this is 1MHz
     { name = "REF_TICK_XTAL", type = "generic", params = { divisor = "0 .. 256" }, output = "XTAL_CLK / (divisor + 1)" },
     { name = "REF_TICK_CK8M", type = "generic", params = { divisor = "0 .. 256" }, output = "RC_FAST_CLK / (divisor + 1)" },
