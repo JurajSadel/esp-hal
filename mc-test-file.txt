@@ -1,2 +1,2 @@
-line1
+control-side-change
 line2
