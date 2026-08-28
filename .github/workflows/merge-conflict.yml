@@ -19,6 +19,12 @@ jobs:
           repoToken: "${{ secrets.GITHUB_TOKEN }}"
           dirtyLabel: "merge-conflict"
           removeOnDirtyLabel: true
+          # GitHub computes `mergeable` asynchronously and the action restarts the
+          # whole page on the first UNKNOWN, so this interval is the floor on how
+          # fast a conflict can be detected. Keep retryAfter * retryMax at the
+          # default 600s budget: exhausting retries yields no labels at all.
+          retryAfter: 15
+          retryMax: 40
           commentOnDirty: "New commits in main have made this PR unmergeable. Please resolve the conflicts."
 
       # GitHub refuses to start `pull_request` runs once a PR conflicts, but a run
