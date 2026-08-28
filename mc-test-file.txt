@@ -1,2 +1,2 @@
-branch-side-change
+resolved-change
 line2
