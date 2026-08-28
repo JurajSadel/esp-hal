@@ -1,2 +1,2 @@
-base-side-change
+conflict-again-1
 line2
