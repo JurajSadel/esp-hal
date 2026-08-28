@@ -1,2 +1,2 @@
-conflict-again-1
+conflict-again-2
 line2
