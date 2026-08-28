@@ -1,2 +1,2 @@
-line1
+branch-side-change
 line2
