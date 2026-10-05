@@ -1068,6 +1068,20 @@ impl TdmConfig {
         )
     }
 
+    /// Calculates the receiver dividers.
+    ///
+    /// In signal loopback mode the receiver is a slave on the BCLK of the transmitter, so its
+    /// module clock has to keep up with that BCLK instead of the one implied by the receiver
+    /// config. A module clock that is routed to the MCLK pad is left as configured.
+    #[cfg(not(i2s_version = "1"))]
+    fn calculate_rx_clock(&self) -> I2sClockDividers {
+        if self.signal_loopback && !matches!(self.mclk_out, MclkOut::Rx) {
+            self.rx_config.calculate_slave_clock(self.tx_config.bclk())
+        } else {
+            self.rx_config.calculate_clock()
+        }
+    }
+
     /// Assigns the given value to the `sample_rate` field in both units.
     #[must_use]
     #[cfg(not(i2s_version = "1"))]
@@ -1313,6 +1327,45 @@ impl TdmUnitConfig {
             self.data_format.data_bits(),
             self.clock_source,
         )
+    }
+
+    /// The BCLK frequency of this unit as a master, in Hz.
+    #[cfg(not(i2s_version = "1"))]
+    fn bclk(&self) -> u32 {
+        self.sample_rate.as_hz() * self.channels.count as u32 * self.data_format.data_bits() as u32
+    }
+
+    /// Calculates the dividers of a unit that runs as slave on an internally looped-back `bclk`.
+    ///
+    /// The slave samples BCLK and WS with its own module clock, so only the MCLK / BCLK ratio
+    /// matters, not the exact MCLK frequency. ESP-IDF clocks slaves at 8x BCLK, and lists 4x as
+    /// the measured minimum for an internal full-duplex RX slave. The master MCLK of a unit
+    /// (256x the sample rate) is only 4x the BCLK of a 32-bit stereo transmitter, and 3x with a
+    /// 24-bit receiver.
+    #[cfg(not(i2s_version = "1"))]
+    fn calculate_slave_clock(&self, bclk: u32) -> I2sClockDividers {
+        const MIN_BCLK_DIVIDER: u32 = 8;
+        // Width of the `rx_bck_div_num` / `tx_bck_div_num` fields.
+        const MAX_BCLK_DIVIDER: u32 = 64;
+
+        let clocks = self.calculate_clock();
+        let sclk = source_frequency(self.clock_source);
+        let min_mclk = bclk * MIN_BCLK_DIVIDER;
+        if clocks.mclk(sclk) >= min_mclk {
+            return clocks;
+        }
+
+        // An integer division: the frequency does not need to be exact, and a fractional
+        // division adds jitter to the clock that samples BCLK.
+        let (_, max_mclk_divider) = property!("clock_tree.i2s.rx_clk.div_num");
+        let mclk_divider = (sclk / min_mclk).clamp(2, max_mclk_divider);
+
+        I2sClockDividers {
+            mclk_divider,
+            bclk_divider: (sclk / mclk_divider / bclk).clamp(2, MAX_BCLK_DIVIDER),
+            denominator: 1,
+            numerator: 0,
+        }
     }
 }
 
@@ -2184,6 +2237,14 @@ pub(crate) mod private {
                 denominator: divider.denominator.max(1),
                 numerator: divider.numerator,
             }
+        }
+
+        /// The resulting MCLK frequency for the given source frequency, in Hz.
+        #[cfg(not(i2s_version = "1"))]
+        pub(crate) fn mclk(&self, sclk: u32) -> u32 {
+            let divider =
+                self.mclk_divider as u64 * self.denominator as u64 + self.numerator as u64;
+            (sclk as u64 * self.denominator as u64 / divider) as u32
         }
     }
 }

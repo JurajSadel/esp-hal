@@ -9,6 +9,7 @@ use crate::i2s::master::{
     Endianness,
     Polarity,
     UnitConfig,
+    private::I2sClockDividers,
 };
 
 impl Info {
@@ -44,7 +45,7 @@ impl Info {
         match config {
             Config::Tdm(c) => {
                 self.configure_tx(&c.tx_config)?;
-                self.configure_rx(&c.rx_config)?;
+                self.configure_rx_with_clock(&c.rx_config, c.calculate_rx_clock())?;
                 self.configure_mclk_pad(c.mclk_out);
 
                 self.regs()
@@ -126,8 +127,15 @@ impl Info {
     }
 
     pub(crate) fn configure_rx(&self, config: &UnitConfig) -> Result<(), ConfigError> {
+        self.configure_rx_with_clock(config, config.calculate_clock())
+    }
+
+    fn configure_rx_with_clock(
+        &self,
+        config: &UnitConfig,
+        clocks: I2sClockDividers,
+    ) -> Result<(), ConfigError> {
         let ws_width = config.calculate_ws_width()?;
-        let clocks = config.calculate_clock();
         self.configure_rx_mclk(config.clock_source, &clocks);
         self.set_rx_bclk(clocks.bclk_divider);
 

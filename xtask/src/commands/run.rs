@@ -182,6 +182,9 @@ pub fn run_elfs(args: RunElfsArgs) -> Result<()> {
             .to_string();
         elfs.push((elf_name, path));
     }
+    // `read_dir` order is platform-dependent. A fixed order keeps failures caused by state that a
+    // previous test left behind reproducible.
+    elfs.sort();
 
     let radio_manifest = load_radio_test_manifest(&args.path)?;
     let radio_tests = if radio_manifest.is_some() {
