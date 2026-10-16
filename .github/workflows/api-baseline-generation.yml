@@ -159,13 +159,18 @@ jobs:
 
           echo "API baseline generation completed"
 
-      - name: Upload API baselines as artifact
+      - name: Upload API baselines to release
         if: steps.check-generation.outputs.should_generate == 'true'
-        uses: actions/upload-artifact@v6
-        with:
-          name: api-baselines-${{ steps.check-generation.outputs.packages }}
-          path: ${{ steps.check-generation.outputs.packages }}/api-baseline/
-          retention-days: 90 # Maximum for public repos
+        shell: bash
+        run: |
+          PACKAGE_NAME="${{ steps.check-generation.outputs.packages }}"
+          (cd "$PACKAGE_NAME/api-baseline" && zip -q "$GITHUB_WORKSPACE/api-baselines-$PACKAGE_NAME.zip" ./*.json.gz)
+          if ! gh release view api-baselines -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/commits" -f message="Storage for the API baselines release, not part of any branch" -f tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904 --jq .sha)
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/api-baselines -f sha="$SHA"
+            gh release create api-baselines -R "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false --title "API baselines" --notes "Latest API baselines for semver checks. Not a release."
+          fi
+          gh release upload api-baselines "$GITHUB_WORKSPACE/api-baselines-$PACKAGE_NAME.zip" -R "$GITHUB_REPOSITORY" --clobber
 
       - name: Create baseline summary
         if: steps.check-generation.outputs.should_generate == 'true'
