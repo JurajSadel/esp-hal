@@ -12,9 +12,9 @@ on:
         default: "main"
         type: string
       package_name:
-        description: "The package name"
+        description: "The package name(s), comma-separated"
         required: true
-        default: "esp-hal"
+        default: "esp-hal,esp-rom-sys,esp-radio"
       force_regeneration:
         description: "Force baseline regeneration even without breaking change"
         required: false
@@ -119,7 +119,7 @@ jobs:
               # -P: Perl-compatible regular expressions
               # `(?<=)`: look-behind: match only if this is present, but do not make this part of the match
               PACKAGES=$(echo "$LABELS" \
-                | grep -oP '(?<=^breaking-change-)[a-z0-9-]+$' || true \
+                | { grep -oP '(?<=^breaking-change-)[a-z0-9-]+$' || true; } \
                 | tr '\n' ',' \
                 | sed 's/,$//')
             fi
@@ -163,14 +163,16 @@ jobs:
         if: steps.check-generation.outputs.should_generate == 'true'
         shell: bash
         run: |
-          PACKAGE_NAME="${{ steps.check-generation.outputs.packages }}"
-          (cd "$PACKAGE_NAME/api-baseline" && zip -q "$GITHUB_WORKSPACE/api-baselines-$PACKAGE_NAME.zip" ./*.json.gz)
           if ! gh release view api-baselines -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/commits" -f message="Storage for the API baselines release, not part of any branch" -f tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904 --jq .sha)
             gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/api-baselines -f sha="$SHA"
             gh release create api-baselines -R "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false --title "API baselines" --notes "Latest API baselines for semver checks. Not a release."
           fi
-          gh release upload api-baselines "$GITHUB_WORKSPACE/api-baselines-$PACKAGE_NAME.zip" -R "$GITHUB_REPOSITORY" --clobber
+          PACKAGES="${{ steps.check-generation.outputs.packages }}"
+          for PACKAGE_NAME in ${PACKAGES//,/ }; do
+            (cd "$PACKAGE_NAME/api-baseline" && zip -q "$GITHUB_WORKSPACE/api-baselines-$PACKAGE_NAME.zip" ./*.json.gz)
+            gh release upload api-baselines "$GITHUB_WORKSPACE/api-baselines-$PACKAGE_NAME.zip" -R "$GITHUB_REPOSITORY" --clobber
+          done
 
       - name: Create baseline summary
         if: steps.check-generation.outputs.should_generate == 'true'
@@ -214,13 +216,14 @@ jobs:
           echo "| Chip | File Size |" >> $GITHUB_STEP_SUMMARY
           echo "|------|-----------|" >> $GITHUB_STEP_SUMMARY
 
-          cd "$PACKAGE_NAME/api-baseline"
-          for file in *.json.gz; do
+          for pkg in ${PACKAGE_NAME//,/ }; do
+            for file in "$pkg"/api-baseline/*.json.gz; do
               if [ -f "$file" ]; then
                   chip=$(basename "$file" .json.gz)
                   size=$(du -h "$file" | cut -f1)
-                  echo "| $chip | $size |" >> $GITHUB_STEP_SUMMARY
+                  echo "| $pkg ($chip) | $size |" >> $GITHUB_STEP_SUMMARY
               fi
+            done
           done
 
       - name: Create no-action summary
