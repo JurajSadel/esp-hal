@@ -378,6 +378,13 @@ static MODEM_DOMAIN_REFCOUNT: Refcount = Refcount::new();
 
 /// Take a reference to the modem power domain, powering it up if this is the first one.
 pub(crate) fn acquire_modem_domain() {
+    #[cfg(any(feature = "wifi", feature = "ble"))]
+    esp_phy::set_calibration_wait_fn(|| {
+        if preempt::initialized() {
+            preempt::usleep(1000);
+        }
+    });
+
     MODEM_DOMAIN_REFCOUNT.increment(|| {
         // Ungate the modem clocks first: `enable_wifi_power_domain` pulses the
         // modem reset, which is ineffective while the clocks are gated — and

@@ -25,9 +25,9 @@ pub(crate) mod reg_access;
 
 use core::marker::PhantomData;
 
-use esp_hal::system::Cpu;
 #[cfg(esp32)]
 use esp_hal::time::{Duration, Instant};
+use esp_hal::{interrupt::RunLevel, system::Cpu};
 use esp_sync::{NonReentrantMutex, RawMutex};
 
 /// Tracks the number of references to the PHY clock.
@@ -139,13 +139,15 @@ static ESP_PHY_LOCK: RawMutex = RawMutex::new();
 struct PhyState {
     /// Number of references to the PHY.
     ref_count: usize,
-    /// The calibration data used for initialization.
+    /// The calibration data used for initialization, taken out while the PHY is being calibrated.
     ///
-    /// If this is [None], when `PhyController::enable_phy` is called, it will be initialized to
-    /// zero and a full calibration is performed.
-    calibration_data: Option<PhyCalibrationData>,
+    /// If the data is [None], when `PhyController::enable_phy` is called, it will be initialized
+    /// to zero and a full calibration is performed.
+    calibration_data: Option<&'static mut Option<PhyCalibrationData>>,
     /// Has the PHY been calibrated since the chip was powered up.
     calibrated: bool,
+    /// Called while waiting for a calibration.
+    calibration_wait_fn: Option<fn()>,
     /// Last calibration result code.
     calibration_result: i32,
 
@@ -167,11 +169,12 @@ struct PhyState {
 
 impl PhyState {
     /// Initialize the PHY state.
-    pub const fn new() -> Self {
+    pub const fn new(calibration_data: &'static mut Option<PhyCalibrationData>) -> Self {
         Self {
             ref_count: 0,
-            calibration_data: None,
+            calibration_data: Some(calibration_data),
             calibrated: false,
+            calibration_wait_fn: None,
             calibration_result: 0,
 
             #[cfg(phy_backed_up_digital_register_count_is_set)]
@@ -186,16 +189,8 @@ impl PhyState {
         }
     }
 
-    /// Get a reference to the calibration data.
-    ///
-    /// If no calibration data is available, it will be initialized to zero.
-    pub fn calibration_data(&mut self) -> &mut PhyCalibrationData {
-        self.calibration_data
-            .get_or_insert([0u8; PHY_CALIBRATION_DATA_LENGTH])
-    }
-
-    /// Calibrate the PHY.
-    fn calibrate(&mut self) {
+    /// Calibrate the PHY and return the result code.
+    fn calibrate(calibration_data: &mut Option<PhyCalibrationData>) -> i32 {
         #[cfg(esp32s2)]
         unsafe {
             sys::include::phy_eco_version_sel(esp_hal::efuse::chip_revision().major);
@@ -221,8 +216,7 @@ impl PhyState {
             phy_bbpll_en_usb(true);
         }
 
-        let calibration_data_available = self.calibration_data.is_some();
-        let calibration_mode = if calibration_data_available {
+        let calibration_mode = if calibration_data.is_some() {
             // If the SOC just woke up from deep sleep and
             // `phy_skip_calibration_after_deep_sleep` is enabled, no calibration will be
             // performed.
@@ -238,13 +232,13 @@ impl PhyState {
         };
         let init_data = &phy_init_data::PHY_INIT_DATA_DEFAULT;
         unsafe {
-            self.calibration_result = sys::include::register_chipv7_phy(
+            sys::include::register_chipv7_phy(
                 init_data,
-                self.calibration_data() as *mut PhyCalibrationData as *mut _,
+                calibration_data.get_or_insert([0u8; PHY_CALIBRATION_DATA_LENGTH])
+                    as *mut PhyCalibrationData as *mut _,
                 calibration_mode,
-            );
+            )
         }
-        self.calibrated = true;
     }
 
     #[cfg(phy_backed_up_digital_register_count_is_set)]
@@ -277,7 +271,7 @@ impl PhyState {
 
     /// Increase the number of references to the PHY.
     ///
-    /// If the ref count was zero, the PHY will be initialized.
+    /// If the ref count was zero, a calibrated PHY is woken up.
     pub fn increase_ref_count(&mut self) {
         if self.ref_count == 0 {
             #[cfg(esp32)]
@@ -287,18 +281,15 @@ impl PhyState {
                 self.phy_clock_state_transition_timestamp = now;
                 self.mac_clock_delta_since_last_call += delta;
             }
-            phy_clocks::with_calibration_clocks(|| {
-                if self.calibrated {
+            if self.calibrated {
+                phy_clocks::with_calibration_clocks(|| {
                     unsafe {
                         sys::include::phy_wakeup_init();
                     }
                     #[cfg(phy_backed_up_digital_register_count_is_set)]
                     self.restore_digital_regs();
-                } else {
-                    self.calibrate();
-                    self.calibrated = true;
-                }
-            });
+                });
+            }
         }
         #[cfg(esp32)]
         if let Some(cb) = self.mac_time_update_cb {
@@ -360,7 +351,11 @@ fn is_reset_from_deepsleep() -> bool {
 }
 
 /// Global PHY initialization state
-static PHY_STATE: NonReentrantMutex<PhyState> = NonReentrantMutex::new(PhyState::new());
+static PHY_STATE: NonReentrantMutex<PhyState> = NonReentrantMutex::new(PhyState::new({
+    static mut CALIBRATION_DATA: Option<PhyCalibrationData> = None;
+    // SAFETY: This is the only reference to it.
+    unsafe { (&raw mut CALIBRATION_DATA).as_mut_unchecked() }
+}));
 
 /// Prevents the PHY from being deinitialized.
 ///
@@ -384,7 +379,7 @@ impl PhyInitGuard<'_> {
 
 impl Drop for PhyInitGuard<'_> {
     fn drop(&mut self) {
-        PHY_STATE.with(|phy_state| phy_state.decrease_ref_count());
+        with_idle_phy_state(|phy_state| phy_state.decrease_ref_count());
     }
 }
 
@@ -393,21 +388,85 @@ impl Drop for PhyInitGuard<'_> {
 /// If no other [PhyInitGuard] is currently alive, this will also initialize the PHY, which
 /// will involve a full RF calibration, unless you loaded previously backed up calibration
 /// data with [set_phy_calibration_data].
+///
+/// # Panics
+///
+/// Panics if called from an interrupt handler during calibration.
 pub fn enable_phy<'d>() -> PhyInitGuard<'d> {
     // In esp-idf, this is done after calculating the MAC time delta, but it shouldn't make
     // much of a difference.
     let _phy_clock_guard = enable_phy_clock();
 
-    PHY_STATE.with(|phy_state| phy_state.increase_ref_count());
+    let calibration_data = with_idle_phy_state(|phy_state| {
+        phy_state.increase_ref_count();
+        if phy_state.calibrated {
+            None
+        } else {
+            phy_state.calibration_data.take()
+        }
+    });
+
+    if let Some(calibration_data) = calibration_data {
+        let result =
+            phy_clocks::with_calibration_clocks(|| PhyState::calibrate(&mut *calibration_data));
+        PHY_STATE.with(|phy_state| {
+            phy_state.calibration_result = result;
+            phy_state.calibrated = true;
+            phy_state.calibration_data = Some(calibration_data);
+        });
+    }
 
     PhyInitGuard { _phy_clock_guard }
+}
+
+/// Runs `f` with the PHY state once no calibration runs.
+///
+/// Interrupt handlers must not wait: it would deadlock or block interrupts.
+fn with_idle_phy_state<R>(f: impl FnOnce(&mut PhyState) -> R) -> R {
+    let mut f = Some(f);
+    loop {
+        let result = PHY_STATE.with(|phy_state| {
+            if phy_state.calibration_data.is_none() {
+                Err(phy_state.calibration_wait_fn)
+            } else {
+                Ok(unwrap!(f.take())(phy_state))
+            }
+        });
+
+        match result {
+            Ok(result) => return result,
+            Err(_) if !RunLevel::current().is_thread() => {
+                panic!("The PHY was used from an interrupt handler while it was calibrated")
+            }
+            Err(Some(wait)) => wait(),
+            Err(None) => core::hint::spin_loop(),
+        }
+    }
+}
+
+/// Set the function called in thread mode while waiting for a calibration.
+///
+/// Without it, waiting spins, which deadlocks if the waiter preempted the calibrating task.
+pub fn set_calibration_wait_fn(wait: fn()) {
+    PHY_STATE.with(|phy_state| phy_state.calibration_wait_fn = Some(wait));
+}
+
+/// Run `f`, which changes modem clocks, outside of a calibration, which would undo the change.
+///
+/// `f` runs in a critical section and must not call into this crate.
+///
+/// # Panics
+///
+/// Panics if called from an interrupt handler during calibration.
+pub fn with_modem_clocks<R>(f: impl FnOnce() -> R) -> R {
+    with_idle_phy_state(|_| f())
 }
 
 /// Manually disable the PHY.
 ///
 /// This is only useful if you [core::mem::forget] the [PhyInitGuard].
 pub fn disable_phy() {
-    PHY_STATE.with(|phy_state| phy_state.decrease_ref_count());
+    with_idle_phy_state(|phy_state| phy_state.decrease_ref_count());
     // Balance the PhyClockGuard that was mem::forget'd with PhyInitGuard.
     // Without this, PHY_CLOCK_REF_COUNTER (u8) leaks on every phy_enable/phy_disable
     // cycle from the WiFi blob C-callback interface, overflowing after ~9 TCP connects.
@@ -494,11 +553,12 @@ pub enum CalibrationResult {
 pub fn set_phy_calibration_data(
     calibration_data: &PhyCalibrationData,
 ) -> Result<(), CalibrationDataAlreadySetError> {
-    PHY_STATE.with(|phy_state| {
-        if phy_state.calibration_data.is_some() {
+    with_idle_phy_state(|phy_state| {
+        let stored = unwrap!(phy_state.calibration_data.as_deref_mut());
+        if stored.is_some() {
             Err(CalibrationDataAlreadySetError)
         } else {
-            phy_state.calibration_data = Some(*calibration_data);
+            *stored = Some(*calibration_data);
             Ok(())
         }
     })
@@ -508,9 +568,8 @@ pub fn set_phy_calibration_data(
 pub fn backup_phy_calibration_data(
     buffer: &mut PhyCalibrationData,
 ) -> Result<(), NoCalibrationDataError> {
-    PHY_STATE.with(|phy_state| {
-        phy_state
-            .calibration_data
+    with_idle_phy_state(|phy_state| {
+        unwrap!(phy_state.calibration_data.as_deref_mut())
             .as_mut()
             .ok_or(NoCalibrationDataError)
             .map(|calibration_data| buffer.copy_from_slice(calibration_data.as_slice()))
